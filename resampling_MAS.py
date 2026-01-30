@@ -34,7 +34,9 @@ R_sun_cm = 6.957e10  # cm
 R_sun_m = 6.957e8    # meters
 r_min = 0.9999999    # Minimum r in R_sun for valid interpolation
 
-phi0_offset = 45
+phi0_offset = 24
+
+
 
 # ============================================================================
 # HELPER FUNCTIONS

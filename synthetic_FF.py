@@ -7,6 +7,7 @@ Supports multi-frequency: outputs a cube (N_pix, N_pix, N_freq).
 Plots use the first frequency only. Uses T_e, N_e, B, and ds from the LOS sampling.
 """
 
+import argparse
 import matplotlib
 matplotlib.use('Agg')
 import numpy as np
@@ -245,4 +246,16 @@ def SyntheticFF(fname_input, freq0, Nfreq, freq_log_step, fname_output):
 
 
 if __name__ == '__main__':
-    SyntheticFF('LOS_data.npz', freq0=450e6, Nfreq=4, freq_log_step=0.1, fname_output='emission_map')
+    parser = argparse.ArgumentParser(description='Synthetic free-free emission via GRFF.')
+    parser.add_argument('--input', '-i', type=str, default='LOS_data.npz',
+                        help='Path to LOS npz file (default: LOS_data.npz)')
+    parser.add_argument('--output', '-o', type=str, default='emission_map',
+                        help='Base path for output files, no extension (default: emission_map)')
+    parser.add_argument('--freq0', '-f', type=float, default=450e6,
+                        help='Start frequency in Hz (default: 450e6)')
+    parser.add_argument('--Nfreq', '-n', type=int, default=4,
+                        help='Number of frequencies (default: 4)')
+    parser.add_argument('--freq-log-step', '-s', type=float, default=0.1,
+                        help='log10 step between frequencies (default: 0.1)')
+    args = parser.parse_args()
+    SyntheticFF(args.input, args.freq0, args.Nfreq, args.freq_log_step, args.output)
