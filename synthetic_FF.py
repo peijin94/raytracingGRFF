@@ -7,6 +7,8 @@ Supports multi-frequency: outputs a cube (N_pix, N_pix, N_freq).
 Plots use the first frequency only. Uses T_e, N_e, B, and ds from the LOS sampling.
 """
 
+import matplotlib
+matplotlib.use('Agg')
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
@@ -56,7 +58,7 @@ print(f"Loading GRFF library from: {libname}")
 GET_MW = initGET_MW(libname)
 
 # Load LOS data
-data = np.load('LOS_data_300MHz.npz')
+data = np.load('LOS_data.npz')
 Ne_LOS = data['Ne_LOS']  # cm^-3
 Te_LOS = data['Te_LOS']  # K
 B_LOS = data['B_LOS']    # G
@@ -253,7 +255,7 @@ plt.savefig('emission_map.png', dpi=150, bbox_inches='tight')
 print("Emission map saved to emission_map.png")
 
 # Side-by-side: T_b and V/I (first frequency)
-fig_tb_vi, (ax_tb, ax_vi) = plt.subplots(1, 2, figsize=(12, 5.5))
+fig_tb_vi, (ax_tb, ax_vi) = plt.subplots(1, 2, figsize=(12, 4.2))
 
 im_tb = ax_tb.imshow(emission_plot, origin='lower',
                      extent=[x_range[0], x_range[1], y_range[0], y_range[1]],

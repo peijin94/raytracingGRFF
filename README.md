@@ -16,7 +16,7 @@ Synthetic radio free-free emission from a MAS coronal model using GRFF.
 python resampling_MAS.py -m ./corona -o LOS_data_300MHz.npz
 ```
 
-Options: `-n` pixels, `-x`/`-y` FOV (R_sun), `-z` LOS points, `-d` dz0, `--no-plots` to skip plots. Run `python resampling_MAS.py -h` for details.
+Options: `-n` pixels, `-f` X-FOV (half-extent in R_sun, e.g. 2.1 → [-2.1, 2.1]), `-z` LOS points, `-d` dz0, `--no-plots` to skip plots. Run `python resampling_MAS.py -h` for details.
 
 **2. Compute brightness temperature and V/I** (reads LOS npz, calls GRFF, writes maps):
 

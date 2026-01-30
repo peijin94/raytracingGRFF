@@ -2,7 +2,7 @@
 """
 Resample MAS model along line-of-sight (LOS) for emission calculation.
 
-For a N_pix x N_pix image covering X_range x Y_range in R_sun,
+For a N_pix x N_pix image covering [-X-FOV, X-FOV] in x and y (R_sun),
 each LOS (x,y coordinates) samples points along z.
 For each point (x, y, z), convert to MAS spherical coordinates
 and interpolate physics parameters: T_e (K), N_e (cm^-3), and B along LOS.
@@ -10,6 +10,8 @@ and interpolate physics parameters: T_e (K), N_e (cm^-3), and B along LOS.
 
 import argparse
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import warnings
 import re
@@ -32,11 +34,13 @@ R_sun_cm = 6.957e10  # cm
 R_sun_m = 6.957e8    # meters
 r_min = 0.9999999    # Minimum r in R_sun for valid interpolation
 
+phi0_offset = 45
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 
-def cart_to_sph(x, y, z):
+def cart_to_sph(x, y, z, phi0_offset=0.0): # degrees
     """
     Convert Cartesian coordinates to spherical coordinates.
 
@@ -57,6 +61,7 @@ def cart_to_sph(x, y, z):
     r = np.sqrt(x**2 + y**2 + z**2)
     colat = np.arccos(np.clip(z / r, -1.0, 1.0))  # Colatitude [0, π]
     lon = np.arctan2(y, x)  # Longitude [-π, π]
+    lon = lon + phi0_offset * np.pi / 180.0
     lon = np.where(lon < 0, lon + 2*np.pi, lon)
     return r, colat, lon
 
@@ -214,7 +219,7 @@ def resample_MAS(model_path, N_pix, X_range, Y_range, N_z, dz0, variable_spacing
             y_arr = np.full(N_z, y)
             z_arr = z_start + z_coords
 
-            r_m_arr, colat_rad_arr, lon_rad_arr = cart_to_sph(x_arr, y_arr, z_arr)
+            r_m_arr, colat_rad_arr, lon_rad_arr = cart_to_sph(x_arr, -z_arr, y_arr, phi0_offset)  #cart_to_sph(x_arr, y_arr, z_arr)
             r_Rsun_arr = r_m_arr / R_sun_m
             valid_mask = r_Rsun_arr >= r_min
 
@@ -307,8 +312,9 @@ def _save_resampling_plots(result, N_pix, x_range, y_range, R_sun_m, verbose):
     plt.close()
 
     z_mid_idx = min(2, Ne_LOS.shape[2] - 1)
+    z_mid_idx = 5
     fig2, axes2 = plt.subplots(1, 3, figsize=(18, 5))
-    im1 = axes2[0].imshow(Ne_LOS[:, :, z_mid_idx], origin='lower',
+    im1 = axes2[0].imshow(np.log10(Ne_LOS[:, :, z_mid_idx]) , origin='lower',
                           extent=[x_range[0], x_range[1], y_range[0], y_range[1]],
                           aspect='equal', cmap='viridis')
     axes2[0].set_xlabel('x (R_sun)')
@@ -316,9 +322,9 @@ def _save_resampling_plots(result, N_pix, x_range, y_range, R_sun_m, verbose):
     axes2[0].set_title(f'N_e at z={z_coords[z_mid_idx]/R_sun_m:.2f} R_sun')
     plt.colorbar(im1, ax=axes2[0], label='N_e (cm^-3)')
 
-    im2 = axes2[1].imshow(Te_LOS[:, :, z_mid_idx], origin='lower',
+    im2 = axes2[1].imshow(np.log10(Te_LOS[:, :, z_mid_idx]), origin='lower',
                          extent=[x_range[0], x_range[1], y_range[0], y_range[1]],
-                         aspect='equal', cmap='plasma')
+                         aspect='equal', cmap='plasma',vmax=5)
     axes2[1].set_xlabel('x (R_sun)')
     axes2[1].set_ylabel('y (R_sun)')
     axes2[1].set_title(f'T_e at z={z_coords[z_mid_idx]/R_sun_m:.2f} R_sun')
@@ -353,51 +359,38 @@ def _parse_range(s):
 def main():
 
 # example usage:
-# python resampling_MAS.py -m ./corona -n 256 -x -1.44,1.44 -y -1.44,1.44 -z 400 -d 3e-4 -v -o LOS_data.npz -p -q
+# python resampling_MAS.py -m ./corona -n 256 -f 2.1 -z 400 -d 3e-4 -v -o LOS_data.npz -p -q
 
     parser = argparse.ArgumentParser(
-        description='Resample MAS model along line-of-sight for emission calculation.'
-    )
+        description='Resample MAS model along line-of-sight for emission calculation.')
     parser.add_argument('--model-path', '-m',type=str,default='./corona',
-        help='Path to MAS model directory (default: ./corona)',
-    )
-    parser.add_argument('--N-pix', '-n',type=int,default=256,
-        help='Image size N_pix x N_pix (default: 256)',
-    )
-    parser.add_argument('--X-range', '-x',type=_parse_range,default='-1.44,1.44',
-        help='X extent in R_sun as min,max (default: -1.44,1.44)',
-    )
-    parser.add_argument('--Y-range', '-y',type=_parse_range,default='-1.44,1.44',
-        help='Y extent in R_sun as min,max (default: -1.44,1.44)',
-    )
+        help='Path to MAS model directory (default: ./corona)')
+    parser.add_argument('--N-pix', '-n',type=int,default=128,
+        help='Image size N_pix x N_pix (default: 256)')
+    parser.add_argument('--X-FOV', '-f', type=float, default=1.44,
+        help='Field of view half-extent in R_sun; x,y in [-X-FOV, X-FOV] (default: 1.44)')
     parser.add_argument('--N-z', '-z',type=int,default=400,
-        help='Number of points along each LOS (default: 400)',
-    )
+        help='Number of points along each LOS (default: 400)')
     parser.add_argument('--dz0', '-d',type=float,default=3e-4,
-        help='Initial spacing for irregular z grid (default: 3e-4)',
-    )
+        help='Initial spacing for irregular z grid (default: 3e-4)')
     parser.add_argument('--no-variable-spacing-z', '-v',action='store_true',
-        help='Use regular linear z spacing instead of irregular grid',
-    )
+        help='Use regular linear z spacing instead of irregular grid')
     parser.add_argument('--z-range', '-zr',type=_parse_range,default=None,
-        help='Z extent in R_sun for linear spacing (used with --no-variable-spacing-z, default: 0,4)',
-    )
+        help='Z extent in R_sun for linear spacing (used with --no-variable-spacing-z, default: 0,4)')
     parser.add_argument('--out-path', '-o',type=str,default='LOS_data.npz',
-        help='Output path for LOS_data.npz (default: LOS_data.npz)',
-    )
+        help='Output path for LOS_data.npz (default: LOS_data.npz)')
     parser.add_argument('--no-plots', '-p',action='store_true',
-        help='Do not save LOS test profile and 2D slice plots',
-    )
+        help='Do not save LOS test profile and 2D slice plots')
     parser.add_argument('--quiet', '-q',action='store_true',
-        help='Suppress progress messages',
-    )
+        help='Suppress progress messages')
     args = parser.parse_args()
 
+    fov = args.X_FOV
     resample_MAS(
         model_path=args.model_path,
         N_pix=args.N_pix,
-        X_range=args.X_range,
-        Y_range=args.Y_range,
+        X_range=[-fov, fov],
+        Y_range=[-fov, fov],
         N_z=args.N_z,
         dz0=args.dz0,
         variable_spacing_z=not args.no_variable_spacing_z,
