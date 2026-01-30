@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model data (large)
+corona/
+corona.zip
+
+# Generated LOS and emission data
+LOS_data*.npz
+emission_map.npz
+
+# Optional: generated plots (uncomment to ignore)
+# *.png
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# GRFF binaries (if not tracked)
+# GRFF/binaries/*.so
+
+
+*.png
