@@ -40,7 +40,7 @@ kb = 1.38065e-16  # Boltzmann constant, erg/K
 sfu2cgs = 1e-19  # SFU to CGS conversion
 
 # GRFF library path (assumed)
-GRFF_LIB = '/fast/peijinz/modelSun/GRFF/binaries/GRFF_DEM_Transfer.so'
+GRFF_LIB = './GRFF/binaries/GRFF_DEM_Transfer.so'
 
 
 def SyntheticFF(fname_input, freq0, Nfreq, freq_log_step, fname_output):
