@@ -1,11 +1,7 @@
-from pathlib import Path
-import sys
-
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from gpu_raytrace import sample_model_with_rays
+from raytracingGRFF.gpu_raytrace import sample_model_with_rays
 
 try:
     import cupy as _cp  # noqa: F401

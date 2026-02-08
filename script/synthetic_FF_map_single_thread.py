@@ -16,6 +16,7 @@ import matplotlib.colors as mcolors
 import ctypes
 from numpy.ctypeslib import ndpointer
 import os
+from pathlib import Path
 
 # Import GRFF initialization function
 # Assuming GRFFcodes.py is in the same directory or in path
@@ -39,8 +40,9 @@ c = 2.998e10  # speed of light, cm/s
 kb = 1.38065e-16  # Boltzmann constant, erg/K
 sfu2cgs = 1e-19  # SFU to CGS conversion
 
-# GRFF library path (assumed)
-GRFF_LIB = '../GRFF/binaries/GRFF_DEM_Transfer.so'
+# GRFF library path
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+GRFF_LIB = str(PROJECT_ROOT / "GRFF" / "binaries" / "GRFF_DEM_Transfer.so")
 
 
 def _save_center_pixel_plots(Ne_LOS, Te_LOS, B_LOS, ds_LOS, N_pix, R_sun, fname_output):

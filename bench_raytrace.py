@@ -10,7 +10,7 @@ import time
 
 import numpy as np
 
-from gpu_raytrace import sample_model_with_rays
+from raytracingGRFF.gpu_raytrace import sample_model_with_rays
 
 
 def make_case(n_pix: int, n_steps: int, grid_n: int, seed: int = 0):

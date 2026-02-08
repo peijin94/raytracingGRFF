@@ -17,13 +17,6 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from scipy.interpolate import RegularGridInterpolator
 
-import astropy.units as u
-from psipy.model import MASOutput
-from psipy.io.mas import _read_mas
-import xarray as xr
-from psipy.model.variable import Variable
-
-
 from numpy.linalg import norm
 from numpy import cross
 
@@ -54,6 +47,10 @@ def cart_to_sph(x, y, z, phi0_offset=0.0):
 
 def load_mas_var_filtered(model, var_name):
     """Load MAS variable with filtered HDF files (matches resampling_MAS_LOS)."""
+    from psipy.io.mas import _read_mas
+    import xarray as xr
+    from psipy.model.variable import Variable
+
     directory = Path(model.path)
     all_files = sorted(Path(directory).glob(f"{var_name}*"))
     pattern = re.compile(rf"^{var_name}\d{{3}}\.hdf$")
@@ -76,6 +73,8 @@ def resample_to_xyz_cube(model, var_name, x_grid, y_grid, z_grid, phi0_offset=0.
     Orientation and phi0 follow resampling_MAS_LOS.py:
     cart_to_sph(x, -z, y, phi0_offset)
     """
+    import astropy.units as u
+
     var = load_mas_var_filtered(model, var_name)
 
     ny = len(y_grid)
@@ -282,6 +281,8 @@ def plot_rays(omega_pe_3d, x_grid, y_grid, z_grid, r_record, out_path, y_index=N
 
 
 def main():
+    from psipy.model import MASOutput
+
     parser = argparse.ArgumentParser(description='Resample MAS model to xyz cube, ray trace, and plot rays.')
     parser.add_argument('--model-path', '-m', type=str, default='./corona',
                         help='Path to MAS model directory (default: ./corona)')

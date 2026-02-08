@@ -32,11 +32,9 @@ from psipy.io.mas import _read_mas
 import xarray as xr
 from psipy.model.variable import Variable
 
-# Use build_rays from this directory
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_rays import ray_trace, resample_to_xyz_cube, load_mas_var_filtered
-from gpu_raytrace import sample_model_with_rays, trace_ray
+from raytracingGRFF.build_rays import ray_trace, resample_to_xyz_cube, load_mas_var_filtered
+from raytracingGRFF.gpu_raytrace import sample_model_with_rays, trace_ray
 
 warnings.filterwarnings('ignore')
 
@@ -87,7 +85,8 @@ except ImportError:
         mwfunc.restype = ctypes.c_int
         return mwfunc
 
-GRFF_LIB = '../GRFF/binaries/GRFF_DEM_Transfer.so'
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+GRFF_LIB = str(PROJECT_ROOT / "GRFF" / "binaries" / "GRFF_DEM_Transfer.so")
 R_sun = 6.957e10  # cm (for synthetic_FF_map compatibility)
 c = 2.998e10     # speed of light, cm/s
 kb = 1.38065e-16 # Boltzmann constant, erg/K
@@ -230,7 +229,7 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
     elif backend == 'fastgrff':
         try:
             import cupy as cp
-            sys.path.insert(0, str((Path(__file__).resolve().parent / 'fastGRFF').resolve()))
+            sys.path.insert(0, str((PROJECT_ROOT / "fastGRFF").resolve()))
             from fastGRFF import get_mw_slice as fast_get_mw_slice
             get_mw_slice = fast_get_mw_slice
         except Exception as e:

@@ -11,7 +11,7 @@ from typing import Dict, Any
 
 import numpy as np
 
-from build_rays import C_R, ray_trace as trace_ray_cpu_impl
+from .build_rays import C_R, ray_trace as trace_ray_cpu_impl
 
 
 def _as_float32_c(a: np.ndarray) -> np.ndarray:
