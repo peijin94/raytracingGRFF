@@ -42,6 +42,7 @@ Ray integration (trajectory RK4) can also be moved to CUDA:
 
 ```bash
 python resample_with_ray_tracing.py --raytrace-device cuda --device cuda
+python resample_with_ray_tracing.py --raytrace-device cuda --device cuda --grff-backend fastgrff
 ```
 
 CUDA-first entry point:

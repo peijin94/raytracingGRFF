@@ -160,7 +160,8 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
                               Nfreq=1, freq0=None, freq_log_step=0.0,
                               save_plots=True, verbose=True,
                               device='cpu', fallback_to_cpu=True,
-                              raytrace_device='cpu'):
+                              raytrace_device='cpu',
+                              grff_backend='get_mw'):
     """
     Run ray tracing for each pixel, sample Ne/Te/B along rays, and compute GRFF emission.
 
@@ -202,6 +203,8 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
         If True and CUDA sampling is unavailable, fall back to CPU sampler.
     raytrace_device : str
         Ray integration device: 'cpu' (default) or 'cuda'.
+    grff_backend : str
+        'get_mw' (default CPU library call) or 'fastgrff' (GPU get_mw_slice).
 
     Returns
     -------
@@ -213,13 +216,29 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
         grff_lib = GRFF_LIB
     if freq0 is None:
         freq0 = freq_hz
-    lib_path = Path(grff_lib)
-    if not lib_path.is_file():
-        raise FileNotFoundError(f"GRFF library not found: {grff_lib}")
-
-    if verbose:
-        print("Loading GRFF library...")
-    GET_MW = initGET_MW(str(lib_path))
+    GET_MW = None
+    get_mw_slice = None
+    cp = None
+    backend = grff_backend.lower()
+    if backend == 'get_mw':
+        lib_path = Path(grff_lib)
+        if not lib_path.is_file():
+            raise FileNotFoundError(f"GRFF library not found: {grff_lib}")
+        if verbose:
+            print("Loading GRFF library...")
+        GET_MW = initGET_MW(str(lib_path))
+    elif backend == 'fastgrff':
+        try:
+            import cupy as cp
+            sys.path.insert(0, str((Path(__file__).resolve().parent / 'fastGRFF').resolve()))
+            from fastGRFF import get_mw_slice as fast_get_mw_slice
+            get_mw_slice = fast_get_mw_slice
+        except Exception as e:
+            raise RuntimeError("Failed to initialize fastGRFF backend. Ensure fastGRFF and CuPy are available.") from e
+        if verbose:
+            print("Using fastGRFF GPU backend (get_mw_slice)...")
+    else:
+        raise ValueError(f"Unsupported grff_backend '{grff_backend}'. Use 'get_mw' or 'fastgrff'.")
 
     if verbose:
         print(f"Loading MAS model from {model_path}...")
@@ -368,57 +387,115 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
     valid_all = sampled['valid_mask']
     s_all = sampled['s']
 
-    p_iter = tqdm(range(n_rays), desc="GRFF pixels", disable=not verbose, unit="px")
-    for p in p_iter:
-        i, j = p // N_pix, p % N_pix
-        valid = valid_all[:, p]
-        if not np.any(valid):
-            emission_cube[i, j, :] = 0.0
-            continue
-        ne_ray = ne_all[:, p][valid]
-        te_ray = te_all[:, p][valid]
-        b_ray = b_all[:, p][valid]
-        ds_ray = ds_all[:, p][valid]
-        S_valid = s_all[:, p][valid]
-        n_pts = len(ne_ray)
+    if backend == 'fastgrff':
+        n_rec = ne_all.shape[0]
+        if verbose:
+            print(f"Running fastGRFF get_mw_slice for {n_rays} pixels, Nz={n_rec}, Nf={Nf}...")
+        Parms_M = np.zeros((15, n_rec, n_rays), dtype=np.float64, order='F')
+        Parms_M[4, :, :] = 90.0
+        Parms_M[6, :, :] = 1 + 4
+        Parms_M[7, :, :] = 30
+        for p in range(n_rays):
+            valid = valid_all[:, p]
+            if not np.any(valid):
+                continue
+            cnt = int(np.count_nonzero(valid))
+            Parms_M[0, :cnt, p] = ds_all[:, p][valid]
+            Parms_M[1, :cnt, p] = te_all[:, p][valid]
+            Parms_M[2, :cnt, p] = ne_all[:, p][valid]
+            Parms_M[3, :cnt, p] = b_all[:, p][valid]
+            if s_input_on:
+                Parms_M[14, :cnt, p] = s_all[:, p][valid] * pixel_area_cm2
 
-        N_valid = n_pts
-        Parms = np.zeros((15, N_valid), dtype='double', order='F')
-        for k in range(N_valid):
-            Parms[0, k] = ds_ray[k]
-            Parms[1, k] = te_ray[k]
-            Parms[2, k] = ne_ray[k]
-            Parms[3, k] = b_ray[k]
-            Parms[4, k] = 90.0
-            Parms[5, k] = 0.0
-            Parms[6, k] = 1 + 4
-            Parms[7, k] = 30
-            Parms[8, k] = Parms[9, k] = Parms[10, k] = 0.0
-            Parms[11, k] = Parms[12, k] = Parms[13, k] = 0.0
-            Parms[14, k] = S_valid[k]*pixel_area_cm2 if s_input_on else 0.0  # S (cross-section) or 0
-        Lparms_local = Lparms.copy()
-        Lparms_local[0] = N_valid
-        dummy_T = np.array(0, dtype='double')
-        dummy_DEM = np.array(0, dtype='double')
-        dummy_DDM = np.array(0, dtype='double')
-        RL = np.zeros((7, Nf), dtype='double', order='F')
-        try:
-            res = GET_MW(Lparms_local, Rparms, Parms, dummy_T, dummy_DEM, dummy_DDM, RL)
-            if res != 0:
+        Lparms_M = cp.zeros(6, dtype=cp.int32, order='F')
+        Lparms_M[0] = n_rays
+        Lparms_M[1] = n_rec
+        Lparms_M[2] = Nf
+        Lparms_M[3] = 1
+
+        Rparms_M = cp.zeros((3, n_rays), dtype=cp.float64, order='F')
+        Rparms_M[0, :] = pixel_area_cm2
+        Rparms_M[1, :] = freq0
+        Rparms_M[2, :] = freq_log_step
+
+        Parms_M_cp = cp.array(np.asfortranarray(Parms_M), dtype=cp.float64, order='F', copy=True)
+        dummy = cp.asarray(0, dtype=cp.float64)
+        RL_M = cp.zeros((7, Nf, n_rays), dtype=cp.float64, order='F')
+
+        status = get_mw_slice(
+            Lparms_M, Rparms_M, Parms_M_cp, dummy, dummy, dummy, RL_M,
+            tile_pixels=256, heap_bytes=2 * 1024 * 1024 * 1024,
+        )
+        if np.any(status != 0) and verbose:
+            bad = np.where(status != 0)[0]
+            print(f"fastGRFF: warning {bad.size} pixels returned non-zero status")
+
+        RL_M_np = cp.asnumpy(RL_M)
+        intensity = (RL_M_np[5] + RL_M_np[6]).T  # (Npix, Nf)
+        denom = RL_M_np[5] + RL_M_np[6]
+        pol_vi = np.where(denom != 0, (RL_M_np[5] - RL_M_np[6]) / (denom + 1e-30), 0.0).T
+        nu_ghz = RL_M_np[0].T  # (Npix, Nf)
+
+        emission_flat = np.zeros((n_rays, Nf), dtype=float)
+        for ifreq in range(Nf):
+            nu_hz = np.where(nu_ghz[:, ifreq] > 0, nu_ghz[:, ifreq] * 1e9, frequencies_Hz[ifreq])
+            conversion_factor = (sfu2cgs * c * c / (2.0 * kb * nu_hz * nu_hz) / pixel_area_cm2) * (AU_cm * AU_cm)
+            emission_flat[:, ifreq] = intensity[:, ifreq] * conversion_factor
+
+        emission_cube[:, :, :] = emission_flat.reshape(N_pix, N_pix, Nf)
+        emission_polVI_cube[:, :, :] = pol_vi.reshape(N_pix, N_pix, Nf)
+    else:
+        p_iter = tqdm(range(n_rays), desc="GRFF pixels", disable=not verbose, unit="px")
+        for p in p_iter:
+            i, j = p // N_pix, p % N_pix
+            valid = valid_all[:, p]
+            if not np.any(valid):
                 emission_cube[i, j, :] = 0.0
                 continue
-            for ifreq in range(Nf):
-                intensity_sfu = RL[5, ifreq] + RL[6, ifreq]  # total intensity from GRFF (SFU)
-                circularpol_VI = (RL[5, ifreq] - RL[6, ifreq]) / (RL[5, ifreq] + RL[6, ifreq] + 1e-30)
-                nu_GHz = RL[0, ifreq]
-                nu_Hz = frequencies_Hz[ifreq] if nu_GHz <= 0 else nu_GHz * 1e9
-                conversion_factor = (sfu2cgs * c * c / (2.0 * kb * nu_Hz * nu_Hz) / Rparms[0]) * (AU_cm * AU_cm)
-                emission_cube[i, j, ifreq] = intensity_sfu * conversion_factor  # brightness temperature in K
-                emission_polVI_cube[i, j, ifreq] = circularpol_VI
-        except Exception as e:
-            if verbose:
-                print(f"  Error pixel ({i},{j}): {e}")
-            emission_cube[i, j, :] = 0.0
+            ne_ray = ne_all[:, p][valid]
+            te_ray = te_all[:, p][valid]
+            b_ray = b_all[:, p][valid]
+            ds_ray = ds_all[:, p][valid]
+            S_valid = s_all[:, p][valid]
+            n_pts = len(ne_ray)
+
+            N_valid = n_pts
+            Parms = np.zeros((15, N_valid), dtype='double', order='F')
+            for k in range(N_valid):
+                Parms[0, k] = ds_ray[k]
+                Parms[1, k] = te_ray[k]
+                Parms[2, k] = ne_ray[k]
+                Parms[3, k] = b_ray[k]
+                Parms[4, k] = 90.0
+                Parms[5, k] = 0.0
+                Parms[6, k] = 1 + 4
+                Parms[7, k] = 30
+                Parms[8, k] = Parms[9, k] = Parms[10, k] = 0.0
+                Parms[11, k] = Parms[12, k] = Parms[13, k] = 0.0
+                Parms[14, k] = S_valid[k]*pixel_area_cm2 if s_input_on else 0.0  # S (cross-section) or 0
+            Lparms_local = Lparms.copy()
+            Lparms_local[0] = N_valid
+            dummy_T = np.array(0, dtype='double')
+            dummy_DEM = np.array(0, dtype='double')
+            dummy_DDM = np.array(0, dtype='double')
+            RL = np.zeros((7, Nf), dtype='double', order='F')
+            try:
+                res = GET_MW(Lparms_local, Rparms, Parms, dummy_T, dummy_DEM, dummy_DDM, RL)
+                if res != 0:
+                    emission_cube[i, j, :] = 0.0
+                    continue
+                for ifreq in range(Nf):
+                    intensity_sfu = RL[5, ifreq] + RL[6, ifreq]  # total intensity from GRFF (SFU)
+                    circularpol_VI = (RL[5, ifreq] - RL[6, ifreq]) / (RL[5, ifreq] + RL[6, ifreq] + 1e-30)
+                    nu_GHz = RL[0, ifreq]
+                    nu_Hz = frequencies_Hz[ifreq] if nu_GHz <= 0 else nu_GHz * 1e9
+                    conversion_factor = (sfu2cgs * c * c / (2.0 * kb * nu_Hz * nu_Hz) / Rparms[0]) * (AU_cm * AU_cm)
+                    emission_cube[i, j, ifreq] = intensity_sfu * conversion_factor  # brightness temperature in K
+                    emission_polVI_cube[i, j, ifreq] = circularpol_VI
+            except Exception as e:
+                if verbose:
+                    print(f"  Error pixel ({i},{j}): {e}")
+                emission_cube[i, j, :] = 0.0
 
     if verbose:
         print("Ray-tracing emission complete.")
@@ -551,6 +628,8 @@ def main():
                         help='Output npz path (default: ray_tracing_emission.npz)')
     parser.add_argument('--grff-lib', type=str, default=GRFF_LIB,
                         help=f'GRFF library path (default: {GRFF_LIB})')
+    parser.add_argument('--grff-backend', type=str, default='get_mw', choices=['get_mw', 'fastgrff'],
+                        help="GRFF backend: 'get_mw' (default) or 'fastgrff' (GPU)")
     parser.add_argument('--s-input-on', action='store_true',
                         help='Pass cross-section ratio S in Parms[14]; otherwise use 0')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda'],
@@ -586,6 +665,7 @@ def main():
         device=args.device,
         fallback_to_cpu=not args.no_fallback,
         raytrace_device=args.raytrace_device,
+        grff_backend=args.grff_backend,
     )
 
 
