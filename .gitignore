@@ -38,3 +38,6 @@ emission_map.npz
 *.png
 
 *.npz
+
+
+fastGRFF/

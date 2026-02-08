@@ -26,7 +26,6 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import astropy.units as u
-from scipy.interpolate import RegularGridInterpolator
 
 from psipy.model import MASOutput
 from psipy.io.mas import _read_mas
@@ -37,6 +36,7 @@ from psipy.model.variable import Variable
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_rays import ray_trace, resample_to_xyz_cube, load_mas_var_filtered
+from gpu_raytrace import sample_model_with_rays, trace_ray
 
 warnings.filterwarnings('ignore')
 
@@ -158,7 +158,9 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
                               n_workers=1, s_input_on=False,
                               out_path='ray_tracing_emission.npz', grff_lib=None,
                               Nfreq=1, freq0=None, freq_log_step=0.0,
-                              save_plots=True, verbose=True):
+                              save_plots=True, verbose=True,
+                              device='cpu', fallback_to_cpu=True,
+                              raytrace_device='cpu'):
     """
     Run ray tracing for each pixel, sample Ne/Te/B along rays, and compute GRFF emission.
 
@@ -194,6 +196,12 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
         Save emission map plot.
     verbose : bool
         Print progress.
+    device : str
+        LOS sampling device: 'cpu' (default) or 'cuda'.
+    fallback_to_cpu : bool
+        If True and CUDA sampling is unavailable, fall back to CPU sampler.
+    raytrace_device : str
+        Ray integration device: 'cpu' (default) or 'cuda'.
 
     Returns
     -------
@@ -255,10 +263,6 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
                                   phi0_offset=PHI0_OFFSET, fill_nan=0.0, verbose=verbose)
     B_xyz = np.sqrt(br_xyz**2 + bt_xyz**2 + bp_xyz**2)
 
-    interp_Ne = RegularGridInterpolator((xg, yg, zg), Ne_xyz, bounds_error=False, fill_value=0.0)
-    interp_Te = RegularGridInterpolator((xg, yg, zg), Te_xyz, bounds_error=False, fill_value=1e4)
-    interp_B = RegularGridInterpolator((xg, yg, zg), B_xyz, bounds_error=False, fill_value=0.0)
-
     # Image grid (R_sun)
     x_coords_Rsun = np.linspace(-X_fov, X_fov, N_pix)
     y_coords_Rsun = np.linspace(-X_fov, X_fov, N_pix)
@@ -269,10 +273,11 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
     z_start = np.full(n_rays, z_observer)
     kvec_in_norm = np.tile([[0, 0, -1]], (n_rays, 1))
 
-    if n_workers <= 1:
+    if raytrace_device == 'cuda':
         if verbose:
-            print(f"Ray tracing {n_rays} rays (serial)...")
-        r_record, crosssection_record = ray_trace(
+            print(f"Ray tracing {n_rays} rays on CUDA...")
+        r_record, crosssection_record = trace_ray(
+            device='cuda',
             omega_pe_3d=omega_pe_3d,
             x_grid=xg, y_grid=yg, z_grid=zg,
             freq_hz=freq_hz,
@@ -283,25 +288,39 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
         )
         S_arr = np.array(crosssection_record)
     else:
-        if verbose:
-            print(f"Ray tracing {n_rays} rays in parallel ({n_workers} workers)...")
-        chunk_size = (n_rays + n_workers - 1) // n_workers
-        chunk_args = []
-        for w in range(n_workers):
-            start = w * chunk_size
-            end = min(start + chunk_size, n_rays)
-            if start >= end:
-                continue
-            chunk_args.append((
-                start, end, x_flat, y_flat, z_start, omega_pe_3d, xg, yg, zg,
-                freq_hz, dt, n_steps, record_stride,
-            ))
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            results = list(executor.map(_ray_trace_chunk, chunk_args))
-        r_record_list = [r for r, s in results]
-        S_list = [s for r, s in results]
-        r_record = np.concatenate(r_record_list, axis=1)
-        S_arr = np.concatenate(S_list, axis=1)
+        if n_workers <= 1:
+            if verbose:
+                print(f"Ray tracing {n_rays} rays (serial)...")
+            r_record, crosssection_record = ray_trace(
+                omega_pe_3d=omega_pe_3d,
+                x_grid=xg, y_grid=yg, z_grid=zg,
+                freq_hz=freq_hz,
+                x_start=x_flat, y_start=y_flat, z_start=z_start,
+                kvec_in_norm=kvec_in_norm,
+                dt=dt, n_steps=n_steps, record_stride=record_stride,
+                trace_crosssections=True, perturb_ratio=2,
+            )
+            S_arr = np.array(crosssection_record)
+        else:
+            if verbose:
+                print(f"Ray tracing {n_rays} rays in parallel ({n_workers} workers)...")
+            chunk_size = (n_rays + n_workers - 1) // n_workers
+            chunk_args = []
+            for w in range(n_workers):
+                start = w * chunk_size
+                end = min(start + chunk_size, n_rays)
+                if start >= end:
+                    continue
+                chunk_args.append((
+                    start, end, x_flat, y_flat, z_start, omega_pe_3d, xg, yg, zg,
+                    freq_hz, dt, n_steps, record_stride,
+                ))
+            with ProcessPoolExecutor(max_workers=n_workers) as executor:
+                results = list(executor.map(_ray_trace_chunk, chunk_args))
+            r_record_list = [r for r, s in results]
+            S_list = [s for r, s in results]
+            r_record = np.concatenate(r_record_list, axis=1)
+            S_arr = np.concatenate(S_list, axis=1)
 
     Nf = Nfreq
     frequencies_Hz = freq0 * (10.0 ** (freq_log_step * np.arange(Nf)))
@@ -322,28 +341,46 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
     emission_polVI_cube = np.zeros((N_pix, N_pix, Nf), dtype='double')
 
     if verbose:
-        print("Sampling Ne/Te/B along rays and calling GRFF...")
+        print(f"Sampling Ne/Te/B along rays on device='{device}' and calling GRFF...")
     ray_start = np.column_stack([x_flat, y_flat, z_start])  # (n_rays, 3)
+    sampled = sample_model_with_rays(
+        device=device,
+        x_grid=xg,
+        y_grid=yg,
+        z_grid=zg,
+        ne_xyz=Ne_xyz,
+        te_xyz=Te_xyz,
+        b_xyz=B_xyz,
+        r_record=r_record,
+        s_arr=S_arr,
+        ray_start=ray_start,
+        r_sun_cm=R_sun_cm,
+        fill_ne=0.0,
+        fill_te=1e4,
+        fill_b=0.0,
+        fallback_to_cpu=fallback_to_cpu,
+        verbose=verbose,
+    )
+    ne_all = sampled['ne']
+    te_all = sampled['te']
+    b_all = sampled['b']
+    ds_all = sampled['ds']
+    valid_all = sampled['valid_mask']
+    s_all = sampled['s']
+
     p_iter = tqdm(range(n_rays), desc="GRFF pixels", disable=not verbose, unit="px")
     for p in p_iter:
         i, j = p // N_pix, p % N_pix
-        r_ray = r_record[:, p, :]   # (n_records, 3)
-        S_ray = S_arr[:, p]         # (n_records,)
-        valid = np.all(np.isfinite(r_ray), axis=1) & np.isfinite(S_ray) & (S_ray > 0)
+        valid = valid_all[:, p]
         if not np.any(valid):
             emission_cube[i, j, :] = 0.0
             continue
-        r_valid = r_ray[valid]
-        S_valid = S_ray[valid]
-        n_pts = len(r_valid)
-        ne_ray = interp_Ne(r_valid)
-        te_ray = interp_Te(r_valid)
-        b_ray = interp_B(r_valid)
-        ds_ray = np.zeros(n_pts, dtype=float)
-        r_start_p = ray_start[p]
-        ds_ray[0] = np.linalg.norm(r_valid[0] - r_start_p) * R_sun_cm
-        for k in range(1, n_pts):
-            ds_ray[k] = np.linalg.norm(r_valid[k] - r_valid[k - 1]) * R_sun_cm
+        ne_ray = ne_all[:, p][valid]
+        te_ray = te_all[:, p][valid]
+        b_ray = b_all[:, p][valid]
+        ds_ray = ds_all[:, p][valid]
+        S_valid = s_all[:, p][valid]
+        n_pts = len(ne_ray)
 
         N_valid = n_pts
         Parms = np.zeros((15, N_valid), dtype='double', order='F')
@@ -400,34 +437,25 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
     if save_plots:
         _save_emission_plot(result, N_pix, X_fov, R_sun_m, out_path, verbose)
         _save_center_pixel_plots(
-            r_record, S_arr, interp_Ne, interp_Te, interp_B,
-            ray_start, N_pix, n_rays, R_sun_cm, out_path, verbose,
+            sampled, N_pix, out_path, verbose,
         )
     return result
 
 
-def _save_center_pixel_plots(r_record, S_arr, interp_Ne, interp_Te, interp_B,
-                             ray_start, N_pix, n_rays, R_sun_cm, out_path, verbose):
+def _save_center_pixel_plots(sampled, N_pix, out_path, verbose):
     """Plot Ne, Te, B, and S along the ray for the center pixel (inspection)."""
     p_center = (N_pix // 2) * N_pix + (N_pix // 2)
-    r_ray = r_record[:, p_center, :]
-    S_ray = S_arr[:, p_center]
-    valid = np.all(np.isfinite(r_ray), axis=1) & np.isfinite(S_ray) & (S_ray > 0)
+    valid = sampled['valid_mask'][:, p_center]
     if not np.any(valid):
         if verbose:
             print("Center pixel has no valid ray points; skipping center-pixel plot.")
         return
-    r_valid = r_ray[valid]
-    S_valid = S_ray[valid]
-    n_pts = len(r_valid)
-    ne_c = interp_Ne(r_valid)
-    te_c = interp_Te(r_valid)
-    b_c = interp_B(r_valid)
-    dist_cm = np.zeros(n_pts, dtype=float)
-    r_start_p = ray_start[p_center]
-    dist_cm[0] = np.linalg.norm(r_valid[0] - r_start_p) * R_sun_cm
-    for k in range(1, n_pts):
-        dist_cm[k] = dist_cm[k - 1] + np.linalg.norm(r_valid[k] - r_valid[k - 1]) * R_sun_cm
+    ne_c = sampled['ne'][:, p_center][valid]
+    te_c = sampled['te'][:, p_center][valid]
+    b_c = sampled['b'][:, p_center][valid]
+    S_valid = sampled['s'][:, p_center][valid]
+    ds_c = sampled['ds'][:, p_center][valid]
+    dist_cm = np.cumsum(ds_c.astype(float))
     dist_Rsun = dist_cm / R_sun_cm
 
     fig, axes = plt.subplots(2, 2, figsize=(10, 8))
@@ -525,6 +553,12 @@ def main():
                         help=f'GRFF library path (default: {GRFF_LIB})')
     parser.add_argument('--s-input-on', action='store_true',
                         help='Pass cross-section ratio S in Parms[14]; otherwise use 0')
+    parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda'],
+                        help="LOS sampling device: 'cpu' (default) or 'cuda'")
+    parser.add_argument('--raytrace-device', type=str, default='cpu', choices=['cpu', 'cuda'],
+                        help="Ray integration device: 'cpu' (default) or 'cuda'")
+    parser.add_argument('--no-fallback', action='store_true',
+                        help='If --device cuda fails, do not fall back to cpu')
     parser.add_argument('--no-plots', action='store_true', help='Do not save plot')
     parser.add_argument('--quiet', '-q', action='store_true', help='Less output')
     args = parser.parse_args()
@@ -549,6 +583,9 @@ def main():
         freq_log_step=0.0,
         save_plots=not args.no_plots,
         verbose=not args.quiet,
+        device=args.device,
+        fallback_to_cpu=not args.no_fallback,
+        raytrace_device=args.raytrace_device,
     )
 
 
