@@ -9,6 +9,8 @@ __pycache__/
 dist/
 build/
 
+*.pdf
+
 # Jupyter
 .ipynb_checkpoints/
 

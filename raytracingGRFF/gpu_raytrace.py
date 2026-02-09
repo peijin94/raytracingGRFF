@@ -371,6 +371,8 @@ def _trace_ray_gpu(
     n_rays = int(start.shape[0])
     s_ratio = cp.ones((n_rays,), dtype=cp.float32)
 
+    s_ratio_accumulated = 1.0
+
     kernel = _get_trace_step_kernel(cp)
     block = 256
     grid = ((n_rays + block - 1) // block,)
@@ -390,11 +392,22 @@ def _trace_ray_gpu(
             ),
         )
 
+        s_ratio_accumulated *= cp.asnumpy(s_ratio)
         if i % int(record_stride) == 0:
             st2 = state.reshape(n_rays, 6)
             r_record.append(cp.asnumpy(st2[:, 0:3]))
             if trace_crosssections:
-                crosssection_record.append(cp.asnumpy(s_ratio))
+                # crosssection record should record the actual area.
+                
+                if len(crosssection_record) > 0:
+                    previous_cs = crosssection_record[-1]
+                else:
+                    previous_cs = 1.0
+                #crosssection_record.append(cp.asnumpy(s_ratio))
+                crosssection_record.append(previous_cs * s_ratio_accumulated)
+                #crosssection_record.append(s_ratio_accumulated)
+            s_ratio_accumulated = 1.0
+
 
     cp.cuda.runtime.deviceSynchronize()
     return np.array(r_record), crosssection_record
@@ -415,7 +428,7 @@ def trace_ray(
     n_steps,
     record_stride=10,
     trace_crosssections=False,
-    perturb_ratio=2,
+    perturb_ratio=1.5,
 ):
     """Trace rays on CPU or CUDA.
 

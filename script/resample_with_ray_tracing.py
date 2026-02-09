@@ -85,7 +85,7 @@ except ImportError:
         mwfunc.restype = ctypes.c_int
         return mwfunc
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 GRFF_LIB = str(PROJECT_ROOT / "GRFF" / "binaries" / "GRFF_DEM_Transfer.so")
 R_sun = 6.957e10  # cm (for synthetic_FF_map compatibility)
 c = 2.998e10     # speed of light, cm/s
@@ -302,7 +302,7 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
             x_start=x_flat, y_start=y_flat, z_start=z_start,
             kvec_in_norm=kvec_in_norm,
             dt=dt, n_steps=n_steps, record_stride=record_stride,
-            trace_crosssections=True, perturb_ratio=2,
+            trace_crosssections=True, perturb_ratio=5,
         )
         S_arr = np.array(crosssection_record)
     else:
@@ -520,7 +520,7 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
 
 def _save_center_pixel_plots(sampled, N_pix, out_path, verbose):
     """Plot Ne, Te, B, and S along the ray for the center pixel (inspection)."""
-    p_center = (N_pix // 2) * N_pix + (N_pix // 2)
+    p_center = (int(N_pix*0.7) // 2) * N_pix + ((N_pix-1) // 2)
     valid = sampled['valid_mask'][:, p_center]
     if not np.any(valid):
         if verbose:
