@@ -29,7 +29,7 @@ except Exception:  # pragma: no cover
 R_MIN = 0.999999
 R_SURFACE = 1.02   # solar radius in R_sun
 DISK_R_MAX = 1.02  # for sqrt(x^2+y^2) <= this, sample on sphere instead of z=z0
-PHI0_OFFSET_DEFAULT = -318
+PHI0_OFFSET_DEFAULT = -140 #-318
 
 
 def cart_to_sph(x, y, z, phi0_offset=0.0):
@@ -134,9 +134,9 @@ def plot_slices(x, y, ne, te, bmag, z0, out_path):
     te_log = _safe_log10(te)
     b_log = _safe_log10(bmag)
 
-    fig, axes = plt.subplots(1, 3, figsize=(12.5, 3.3))
+    fig, axes = plt.subplots(1, 3, figsize=(10, 5))
 
-    vmax = np.nanpercentile(ne_log, 99)
+    vmax = np.nanpercentile(ne_log, 99.9)
     vmin = np.nanpercentile(ne_log, 1)
 
     print(f"N_e: vmin={vmin}, vmax={vmax}")
@@ -144,23 +144,26 @@ def plot_slices(x, y, ne, te, bmag, z0, out_path):
     axes[0].set_xlabel("x ($R_\odot$)")
     axes[0].set_ylabel("y ($R_\odot$)")
     axes[0].set_title(f"$N_e$ at z={z0:.2f} $R_\odot$")
-    plt.colorbar(im1, ax=axes[0], label="$N_e$ ($cm^{-3}$) [log10]")
+    plt.colorbar(im1, ax=axes[0], label="$N_e$ ($cm^{-3}$) [log10]", location="top", orientation="horizontal", pad=0.08)
+    axes[0].text(0.02, 0.98, "(a)", transform=axes[0].transAxes, va="top", ha="left", fontsize=12, fontweight="bold", color="white")
 
-    vmax = np.nanpercentile(te_log, 99)
-    vmin = np.nanpercentile(te_log, 1)
+    vmax = np.nanpercentile(te_log, 99.9)
+    vmin = np.nanpercentile(te_log, 0.1)
     im2 = axes[1].imshow(te_log, origin="lower", extent=extent, aspect="equal", cmap="plasma", vmin=vmin, vmax=vmax)
     axes[1].set_xlabel("x ($R_\odot$)")
     #axes[1].set_ylabel("y ($R_\odot$)")
     axes[1].set_title(f"$T_e$ at z={z0:.2f} $R_\odot$")
-    plt.colorbar(im2, ax=axes[1], label="$T_e$ (K) [log10]")
+    plt.colorbar(im2, ax=axes[1], label="$T_e$ (K) [log10]", location="top", orientation="horizontal", pad=0.08)
+    axes[1].text(0.02, 0.98, "(b)", transform=axes[1].transAxes, va="top", ha="left", fontsize=12, fontweight="bold", color="white")
 
-    vmax = np.nanpercentile(b_log, 99.9)
-    vmin = np.nanpercentile(b_log, 0.1)
+    vmax = np.nanmax(b_log)
+    vmin = np.nanmin(b_log)
     im3 = axes[2].imshow(b_log, origin="lower", extent=extent, aspect="equal", cmap="hot", vmin=vmin, vmax=vmax)
     axes[2].set_xlabel("x ($R_\odot$)")
     #axes[2].set_ylabel("y ($R_\odot$)")
     axes[2].set_title(f"|B| at z={z0:.2f} $R_\odot$")
-    plt.colorbar(im3, ax=axes[2], label="|B| (G) [log10]")
+    plt.colorbar(im3, ax=axes[2], label="|B| (G) [log10]", location="top", orientation="horizontal", pad=0.08)
+    axes[2].text(0.02, 0.98, "(c)", transform=axes[2].transAxes, va="top", ha="left", fontsize=12, fontweight="bold", color="white")
 
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
