@@ -67,7 +67,7 @@ def _ray_trace_chunk(args):
 
 R_sun_cm = 6.957e10   # cm
 R_sun_m = 6.957e8     # meters
-PHI0_OFFSET = 24.0
+PHI0_OFFSET = 0     # default; override with --phi0-offset
 R_MIN = 0.999999
 
 # GRFF
@@ -152,7 +152,7 @@ def resample_var_to_cube(model, var_name, x_grid, y_grid, z_grid, target_unit=No
 
 
 def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
-                              grid_n=256, grid_extent=3.0, z_observer=3.0,
+                              grid_n=400, grid_extent=3.0, z_observer=3.0,
                               dt=6e-3, n_steps=5000, record_stride=10,
                               n_workers=1, s_input_on=False,
                               out_path='ray_tracing_emission.npz', grff_lib=None,
@@ -160,7 +160,10 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
                               save_plots=True, verbose=True,
                               device='cpu', fallback_to_cpu=True,
                               raytrace_device='cpu',
-                              grff_backend='get_mw'):
+                              grff_backend='get_mw',
+                              consider_beam=False,
+                              beam_fwhm=0.2,
+                              phi0_offset=0):
     """
     Run ray tracing for each pixel, sample Ne/Te/B along rays, and compute GRFF emission.
 
@@ -204,6 +207,12 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
         Ray integration device: 'cpu' (default) or 'cuda'.
     grff_backend : str
         'get_mw' (default CPU library call) or 'fastgrff' (GPU get_mw_slice).
+    consider_beam : bool
+        If True, convolve with beam.
+    beam_fwhm : float
+        Beam FWHM in R_sun.
+    phi0_offset : float
+        Longitude offset in degrees for MAS spherical coords (default 0).
 
     Returns
     -------
@@ -257,28 +266,30 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
 
     if verbose:
         print("Resampling rho -> omega_pe (for ray tracing)...")
-    rhoxyz = resample_to_xyz_cube(model, 'rho', xg, yg, zg, phi0_offset=PHI0_OFFSET,
+    rhoxyz = resample_to_xyz_cube(model, 'rho', xg, yg, zg, phi0_offset=phi0_offset,
                                   fill_nan=0.0, verbose=verbose)
     omega_pe_3d = 8.93e3 * np.sqrt(np.maximum(rhoxyz, 0.0)) * 2 * np.pi
+    # Avoid NaN in ray tracing (e.g. R<1 or bad grid): ray stalls or kc0=NaN near disk center
+    omega_pe_3d = np.nan_to_num(omega_pe_3d, nan=0.0, posinf=0.0, neginf=0.0)
     # Ne in cm^-3: same as resampling_MAS_LOS — sample rho at coords and convert to u.cm**-3
     if verbose:
         print("Resampling rho -> Ne (cm^-3, as in resampling_MAS_LOS)...")
     Ne_xyz = resample_var_to_cube(model, 'rho', xg, yg, zg, target_unit=u.cm**-3,
-                                  phi0_offset=PHI0_OFFSET, fill_nan=0.0, verbose=verbose)
+                                  phi0_offset=phi0_offset, fill_nan=0.0, verbose=verbose)
     Ne_xyz = np.maximum(Ne_xyz, 0.0)
     if verbose:
         print("Resampling Te...")
     Te_xyz = resample_var_to_cube(model, temp_var, xg, yg, zg, target_unit=u.K,
-                                  phi0_offset=PHI0_OFFSET, fill_nan=np.nan, verbose=verbose)
+                                  phi0_offset=phi0_offset, fill_nan=np.nan, verbose=verbose)
     Te_xyz = np.where(np.isfinite(Te_xyz), Te_xyz, 1e4)
     if verbose:
         print("Resampling B components...")
     br_xyz = resample_var_to_cube(model, 'br', xg, yg, zg, target_unit=u.G,
-                                  phi0_offset=PHI0_OFFSET, fill_nan=0.0, verbose=verbose)
+                                  phi0_offset=phi0_offset, fill_nan=0.0, verbose=verbose)
     bt_xyz = resample_var_to_cube(model, 'bt', xg, yg, zg, target_unit=u.G,
-                                  phi0_offset=PHI0_OFFSET, fill_nan=0.0, verbose=verbose)
+                                  phi0_offset=phi0_offset, fill_nan=0.0, verbose=verbose)
     bp_xyz = resample_var_to_cube(model, 'bp', xg, yg, zg, target_unit=u.G,
-                                  phi0_offset=PHI0_OFFSET, fill_nan=0.0, verbose=verbose)
+                                  phi0_offset=phi0_offset, fill_nan=0.0, verbose=verbose)
     B_xyz = np.sqrt(br_xyz**2 + bt_xyz**2 + bp_xyz**2)
 
     # Image grid (R_sun)
@@ -395,7 +406,13 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
         Parms_M[6, :, :] = 1 + 4
         Parms_M[7, :, :] = 30
         for p in range(n_rays):
-            valid = valid_all[:, p]
+            # Require finite ne/te/b so GRFF and emission stay finite (avoids NaN near disk from R<1 sampling)
+            valid = (
+                valid_all[:, p]
+                & np.isfinite(ne_all[:, p])
+                & np.isfinite(te_all[:, p])
+                & np.isfinite(b_all[:, p])
+            )
             if not np.any(valid):
                 continue
             cnt = int(np.count_nonzero(valid))
@@ -405,6 +422,8 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
             Parms_M[3, :cnt, p] = b_all[:, p][valid]
             if s_input_on:
                 Parms_M[14, :cnt, p] = s_all[:, p][valid] * pixel_area_cm2
+            else:
+                Parms_M[14, :cnt, p] = 0.0
 
         Lparms_M = cp.zeros(6, dtype=cp.int32, order='F')
         Lparms_M[0] = n_rays
@@ -443,11 +462,19 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
 
         emission_cube[:, :, :] = emission_flat.reshape(N_pix, N_pix, Nf)
         emission_polVI_cube[:, :, :] = pol_vi.reshape(N_pix, N_pix, Nf)
+        # Avoid NaNs in map (e.g. from GRFF or conversion when ray/sampling near surface)
+        emission_cube[:, :, :] = np.nan_to_num(emission_cube, nan=0.0, posinf=0.0, neginf=0.0)
     else:
         p_iter = tqdm(range(n_rays), desc="GRFF pixels", disable=not verbose, unit="px")
         for p in p_iter:
             i, j = p // N_pix, p % N_pix
-            valid = valid_all[:, p]
+            # Require finite ne/te/b (avoids NaN near disk center from R<1 or ray-surface sampling)
+            valid = (
+                valid_all[:, p]
+                & np.isfinite(ne_all[:, p])
+                & np.isfinite(te_all[:, p])
+                & np.isfinite(b_all[:, p])
+            )
             if not np.any(valid):
                 emission_cube[i, j, :] = 0.0
                 continue
@@ -499,6 +526,10 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
     if verbose:
         print("Ray-tracing emission complete.")
     # emission_cube: brightness temperature T_b in K (CGS conversion applied)
+    # Replace any remaining NaN (e.g. disk center, R<1 sampling) with 0
+    emission_cube = np.nan_to_num(emission_cube, nan=0.0, posinf=0.0, neginf=0.0)
+
+
     result = {
         'emission_cube': emission_cube,       # T_b (K), shape (N_pix, N_pix, Nf)
         'emission_polVI_cube': emission_polVI_cube,
@@ -511,7 +542,7 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
         print(f"Saved {out_path}")
 
     if save_plots:
-        _save_emission_plot(result, N_pix, X_fov, R_sun_m, out_path, verbose)
+        _save_emission_plot(result, N_pix, X_fov, R_sun_m, out_path, verbose, consider_beam, beam_fwhm)
         _save_center_pixel_plots(
             sampled, N_pix, out_path, verbose,
         )
@@ -573,22 +604,42 @@ def _save_center_pixel_plots(sampled, N_pix, out_path, verbose):
         print(f"Center-pixel inspection plot saved to {plot_path}")
 
 
-def _save_emission_plot(result, N_pix, X_fov, R_sun_m, out_path, verbose):
+def _save_emission_plot(result, N_pix, X_fov, R_sun_m, out_path, verbose, consider_beam, beam_fwhm):
     emission_cube = result['emission_cube']
     x_coords = result['x_coords']
     y_coords = result['y_coords']
     frequencies_Hz = result['frequencies_Hz']
     emission_map = emission_cube[:, :, 0]
     emission_map[emission_map == 0] = np.nan
+
     x_range = [x_coords[0] / R_sun_m, x_coords[-1] / R_sun_m]
     y_range = [y_coords[0] / R_sun_m, y_coords[-1] / R_sun_m]
+
+    if consider_beam:
+        # convolve the emission map with a Gaussian beam
+        from scipy.ndimage import gaussian_filter
+        beam_radius_pix = beam_fwhm / (x_range[-1] - x_range[0]) * N_pix
+
+        print(f"Convolving emission map with a Gaussian beam of FWHM {beam_fwhm} R_sun ({beam_radius_pix} pixels)")
+        emission_map = gaussian_filter(emission_map, sigma=beam_radius_pix)
+
+  
     fig, ax = plt.subplots(figsize=(6, 4.8))
     im = ax.imshow(emission_map, origin='lower',
                    extent=[x_range[0], x_range[1], y_range[0], y_range[1]],
-                   aspect='equal', cmap='hot', interpolation='bilinear')
+                   aspect='equal', cmap='hot', interpolation='bilinear',
+                   vmin=0, vmax=np.nanmax(emission_map)*1.1)
     ax.set_xlabel('x (R_sun)')
     ax.set_ylabel('y (R_sun)')
     ax.set_title(f'Ray-tracing emission T_b at {frequencies_Hz[0]/1e9:.3f} GHz')
+
+
+    # draw beam shape
+    if consider_beam:
+        ax.add_patch(plt.Circle((-0.8*X_fov, -0.8*X_fov), beam_fwhm, color='white', fill=False, linewidth=1.5))
+      
+
+
     plt.colorbar(im, ax=ax, label='T_b (K)')
     plt.tight_layout()
     plot_path = Path(out_path).with_suffix('.png')
@@ -635,6 +686,14 @@ def main():
                         help="LOS sampling device: 'cpu' (default) or 'cuda'")
     parser.add_argument('--raytrace-device', type=str, default='cpu', choices=['cpu', 'cuda'],
                         help="Ray integration device: 'cpu' (default) or 'cuda'")
+
+    parser.add_argument('--consider-beam', action='store_true',
+                        help='Consider beam shape of telescope in emission map')
+
+    parser.add_argument('--beam-fwhm', type=float, default=0.2,
+                        help='Beam FWHM in R_sun (default: 0.2)')
+    parser.add_argument('--phi0-offset', type=float, default=0,
+                        help='Longitude offset in degrees for MAS spherical coords (default: 0)')
     parser.add_argument('--no-fallback', action='store_true',
                         help='If --device cuda fails, do not fall back to cpu')
     parser.add_argument('--no-plots', action='store_true', help='Do not save plot')
@@ -665,6 +724,9 @@ def main():
         fallback_to_cpu=not args.no_fallback,
         raytrace_device=args.raytrace_device,
         grff_backend=args.grff_backend,
+        consider_beam=args.consider_beam,
+        beam_fwhm=args.beam_fwhm,
+        phi0_offset=args.phi0_offset,
     )
 
 

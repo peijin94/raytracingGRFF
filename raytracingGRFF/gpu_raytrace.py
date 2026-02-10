@@ -43,7 +43,7 @@ def _get_cupy():
     return cp
 
 
-def _trilinear_uniform_cp(cp, field, points, x0, y0, z0, inv_dx, inv_dy, inv_dz, fill_value=np.nan):
+def _trilinear_uniform_cp(cp, field, points, x0, y0, z0, inv_dx, inv_dy, inv_dz, fill_value=np.inf):
     x = points[:, 0]
     y = points[:, 1]
     z = points[:, 2]
@@ -91,7 +91,8 @@ def _trilinear_uniform_cp(cp, field, points, x0, y0, z0, inv_dx, inv_dy, inv_dz,
     c11 = c011 * (1.0 - tx) + c111 * tx
     c0 = c00 * (1.0 - ty) + c10 * ty
     c1 = c01 * (1.0 - ty) + c11 * ty
-    out[inb] = c0 * (1.0 - tz) + c1 * tz
+    v = c0 * (1.0 - tz) + c1 * tz
+    out[inb] = cp.where(cp.isfinite(v), v, fill_value)
     return out
 
 
@@ -360,8 +361,10 @@ def _trace_ray_gpu(
 
     omega0 = np.float32(2.0 * np.pi * freq_hz)
     omega_pe_start = _trilinear_uniform_cp(
-        cp, omega_pe, start, x0, y0, z0, inv_dx, inv_dy, inv_dz, fill_value=np.nan
+        cp, omega_pe, start, x0, y0, z0, inv_dx, inv_dy, inv_dz
     )
+    # Avoid NaN kc0 when ray start is in bad region (e.g. R<1) so ray doesn't get stuck
+    omega_pe_start = cp.nan_to_num(omega_pe_start, nan=0.0, posinf=0.0, neginf=0.0)
     kc0 = cp.sqrt(cp.maximum(omega0 * omega0 - omega_pe_start * omega_pe_start, 0.0))
 
     state = cp.ascontiguousarray(cp.concatenate([start, kdir * kc0[:, None]], axis=1).reshape(-1))
@@ -374,7 +377,7 @@ def _trace_ray_gpu(
     s_ratio_accumulated = 1.0
 
     kernel = _get_trace_step_kernel(cp)
-    block = 256
+    block = 64
     grid = ((n_rays + block - 1) // block,)
 
     for i in range(int(n_steps)):
@@ -397,19 +400,14 @@ def _trace_ray_gpu(
             st2 = state.reshape(n_rays, 6)
             r_record.append(cp.asnumpy(st2[:, 0:3]))
             if trace_crosssections:
-                # crosssection record should record the actual area.
-                
                 if len(crosssection_record) > 0:
                     previous_cs = crosssection_record[-1]
                 else:
                     previous_cs = 1.0
-                #crosssection_record.append(cp.asnumpy(s_ratio))
                 crosssection_record.append(previous_cs * s_ratio_accumulated)
-                #crosssection_record.append(s_ratio_accumulated)
             s_ratio_accumulated = 1.0
 
 
-    cp.cuda.runtime.deviceSynchronize()
     return np.array(r_record), crosssection_record
 
 
@@ -571,6 +569,10 @@ void trilinear_sample_uniform(
     bool finite = isfinite(x) && isfinite(y) && isfinite(z) && isfinite(sv);
     bool valid = finite && (sv > 0.0f);
     valid_mask[idx] = valid ? 1 : 0;
+    if (!finite) {
+        out[idx] = fill_value;
+        return;
+    }
 
     float fx = (x - x0) * inv_dx;
     float fy = (y - y0) * inv_dy;
@@ -621,7 +623,8 @@ void trilinear_sample_uniform(
     float c11 = c011 * (1.0f - tx) + c111 * tx;
     float c0 = c00 * (1.0f - ty) + c10 * ty;
     float c1 = c01 * (1.0f - ty) + c11 * ty;
-    out[idx] = c0 * (1.0f - tz) + c1 * tz;
+    float v = c0 * (1.0f - tz) + c1 * tz;
+    out[idx] = isfinite(v) ? v : fill_value;
 }
 '''
 
@@ -676,8 +679,8 @@ def _sample_model_with_rays_cuda(
 
     def _sample(field_np: np.ndarray, fill: float):
         field = cp.asarray(_as_float32_c(field_np))
-        out = cp.empty((n_total,), dtype=cp.float32)
-        valid = cp.empty((n_total,), dtype=cp.uint8)
+        out = cp.full((n_total,), float(fill), dtype=cp.float32)
+        valid = cp.zeros((n_total,), dtype=cp.uint8)
         kernel(
             grid,
             (block,),
