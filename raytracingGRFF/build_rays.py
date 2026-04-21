@@ -53,15 +53,33 @@ def load_mas_var_filtered(model, var_name):
 
     directory = Path(model.path)
     all_files = sorted(Path(directory).glob(f"{var_name}*"))
-    pattern = re.compile(rf"^{var_name}\d{{3}}\.hdf$")
+    # Support both 3-digit and 6-digit snapshot suffixes:
+    #   rho000.hdf, rho000020.hdf, etc.
+    pattern = re.compile(rf"^{var_name}\d+\.hdf$")
     filtered_files = [str(f) for f in all_files if f.name and pattern.match(f.name)]
 
     if not filtered_files:
+        # Fallback for datasets where psipy registers suffixed names
+        # (e.g. rho000 instead of rho).
+        model_vars = {str(v).lower() for v in getattr(model, "variables", [])}
+        if var_name in model_vars:
+            return model[var_name]
+        suffixed = sorted(v for v in model_vars if v.startswith(var_name))
+        if suffixed:
+            return model[suffixed[0]]
         return model[var_name]
 
     data = [_read_mas(f, var_name) for f in filtered_files]
     var_data = data[0] if len(data) == 1 else xr.concat(data, dim="time")
-    unit_info = model.get_unit(var_name)
+    try:
+        unit_info = model.get_unit(var_name)
+    except Exception:
+        # Try with a suffixed key if base name is not registered.
+        model_vars = [str(v).lower() for v in getattr(model, "variables", [])]
+        suffixed = [v for v in model_vars if v.startswith(var_name)]
+        if not suffixed:
+            raise
+        unit_info = model.get_unit(suffixed[0])
     var_unit = unit_info[0] * unit_info[1]
     return Variable(var_data, var_name, var_unit, model.get_runit())
 

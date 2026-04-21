@@ -26,6 +26,10 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import astropy.units as u
+try:
+    import sunpy.visualization.colormaps.color_tables as sunpy_ct
+except Exception:
+    sunpy_ct = None
 
 from psipy.model import MASOutput
 from psipy.io.mas import _read_mas
@@ -35,6 +39,7 @@ from psipy.model.variable import Variable
 import sys
 from raytracingGRFF.build_rays import ray_trace, resample_to_xyz_cube, load_mas_var_filtered
 from raytracingGRFF.gpu_raytrace import sample_model_with_rays, trace_ray
+from raytracingGRFF.util import patch_nan_emission_map
 
 warnings.filterwarnings('ignore')
 
@@ -67,7 +72,7 @@ def _ray_trace_chunk(args):
 
 R_sun_cm = 6.957e10   # cm
 R_sun_m = 6.957e8     # meters
-PHI0_OFFSET = 0     # default; override with --phi0-offset
+PHI0_OFFSET = 90     # default; override with --phi0-offset
 R_MIN = 0.999999
 
 # GRFF
@@ -163,7 +168,10 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
                               grff_backend='get_mw',
                               consider_beam=False,
                               beam_fwhm=0.2,
-                              phi0_offset=0):
+                              phi0_offset=0,
+                              plot_log_norm=False,
+                              plot_vmin=None,
+                              plot_vmax=None):
     """
     Run ray tracing for each pixel, sample Ne/Te/B along rays, and compute GRFF emission.
 
@@ -213,6 +221,10 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
         Beam FWHM in R_sun.
     phi0_offset : float
         Longitude offset in degrees for MAS spherical coords (default 0).
+    plot_log_norm : bool
+        If True, emission map PNG uses matplotlib LogNorm (needs plot_vmin > 0).
+    plot_vmin, plot_vmax : float or None
+        Color scale limits for emission PNG; if None, linear scale uses 0 and data max.
 
     Returns
     -------
@@ -251,14 +263,30 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
     if verbose:
         print(f"Loading MAS model from {model_path}...")
     model = MASOutput(str(model_path))
-    if "te" in model.variables:
+    # Some CCMC snapshot folders expose variables only via filenames
+    # (e.g. rho000020.hdf, t000020.hdf), not via model.variables.
+    model_vars = {str(v).lower() for v in getattr(model, "variables", [])}
+    file_vars = set()
+    for f in Path(model_path).glob("*.hdf"):
+        m = re.match(r"^([A-Za-z]+)\d+\.hdf$", f.name)
+        if m:
+            file_vars.add(m.group(1).lower())
+    available_vars = model_vars | file_vars
+
+    if "te" in available_vars:
         temp_var = "te"
-    elif "t" in model.variables:
+    elif "t" in available_vars:
         temp_var = "t"
     else:
-        raise ValueError("No electron temperature variable (te or t) found.")
-    if "br" not in model.variables or "bt" not in model.variables or "bp" not in model.variables:
-        raise ValueError("Magnetic field components (br, bt, bp) not all found.")
+        raise ValueError(
+            "No electron temperature variable (te or t) found. "
+            f"Available vars: {sorted(available_vars)}"
+        )
+    if not {"br", "bt", "bp"}.issubset(available_vars):
+        raise ValueError(
+            "Magnetic field components (br, bt, bp) not all found. "
+            f"Available vars: {sorted(available_vars)}"
+        )
 
     xg = np.linspace(-grid_extent, grid_extent, grid_n)
     yg = np.linspace(-grid_extent, grid_extent, grid_n)
@@ -542,7 +570,19 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
         print(f"Saved {out_path}")
 
     if save_plots:
-        _save_emission_plot(result, N_pix, X_fov, R_sun_m, out_path, verbose, consider_beam, beam_fwhm)
+        _save_emission_plot(
+            result,
+            N_pix,
+            X_fov,
+            R_sun_m,
+            out_path,
+            verbose,
+            consider_beam,
+            beam_fwhm,
+            plot_log_norm=plot_log_norm,
+            plot_vmin=plot_vmin,
+            plot_vmax=plot_vmax,
+        )
         _save_center_pixel_plots(
             sampled, N_pix, out_path, verbose,
         )
@@ -604,13 +644,29 @@ def _save_center_pixel_plots(sampled, N_pix, out_path, verbose):
         print(f"Center-pixel inspection plot saved to {plot_path}")
 
 
-def _save_emission_plot(result, N_pix, X_fov, R_sun_m, out_path, verbose, consider_beam, beam_fwhm):
+def _save_emission_plot(
+    result,
+    N_pix,
+    X_fov,
+    R_sun_m,
+    out_path,
+    verbose,
+    consider_beam,
+    beam_fwhm,
+    plot_log_norm=False,
+    plot_vmin=None,
+    plot_vmax=None,
+):
     emission_cube = result['emission_cube']
     x_coords = result['x_coords']
     y_coords = result['y_coords']
     frequencies_Hz = result['frequencies_Hz']
-    emission_map = emission_cube[:, :, 0]
-    emission_map[emission_map == 0] = np.nan
+    emission_map = np.array(emission_cube[:, :, 0], dtype=float, copy=True)
+    # Interpolate bad points for display (NaN/Inf), preserving valid pixels.
+    if np.any(~np.isfinite(emission_map)):
+        emission_map[~np.isfinite(emission_map)] = np.nan
+        emission_map = patch_nan_emission_map(emission_map, inplace=False)
+    emission_map = np.nan_to_num(emission_map, nan=0.0, posinf=0.0, neginf=0.0)
 
     x_range = [x_coords[0] / R_sun_m, x_coords[-1] / R_sun_m]
     y_range = [y_coords[0] / R_sun_m, y_coords[-1] / R_sun_m]
@@ -625,10 +681,48 @@ def _save_emission_plot(result, N_pix, X_fov, R_sun_m, out_path, verbose, consid
 
   
     fig, ax = plt.subplots(figsize=(6, 4.8))
-    im = ax.imshow(emission_map, origin='lower',
-                   extent=[x_range[0], x_range[1], y_range[0], y_range[1]],
-                   aspect='equal', cmap='hinodexrt', interpolation='bilinear',
-                   vmin=0, vmax=np.nanmax(emission_map)*1.1)
+    if sunpy_ct is not None:
+        try:
+            cmap_use = sunpy_ct.xrt_color_table()
+        except Exception:
+            cmap_use = 'inferno'
+    else:
+        cmap_use = 'inferno'
+
+    if plot_log_norm and plot_vmin is not None and plot_vmax is not None:
+        from matplotlib.colors import LogNorm
+
+        lo, hi = float(plot_vmin), float(plot_vmax)
+        if lo <= 0 or hi <= lo:
+            raise ValueError("plot_log_norm requires plot_vmin > 0 and plot_vmax > plot_vmin")
+        disp = np.clip(np.asarray(emission_map, dtype=float), lo, hi)
+        norm = LogNorm(vmin=lo, vmax=hi, clip=True)
+        im = ax.imshow(
+            disp,
+            origin="lower",
+            extent=[x_range[0], x_range[1], y_range[0], y_range[1]],
+            aspect="equal",
+            cmap=cmap_use,
+            interpolation="bilinear",
+            norm=norm,
+        )
+    else:
+        vmax_plot = (
+            float(plot_vmax)
+            if plot_vmax is not None
+            else float(np.nanmax(emission_map) * 1.1)
+        )
+        vmin_plot = 0.0 if plot_vmin is None else float(plot_vmin)
+        im = ax.imshow(
+            emission_map,
+            origin="lower",
+            extent=[x_range[0], x_range[1], y_range[0], y_range[1]],
+            aspect="equal",
+            cmap=cmap_use,
+            interpolation="bilinear",
+            vmin=vmin_plot,
+            vmax=vmax_plot,
+        )
     ax.set_xlabel('x (R_sun)')
     ax.set_ylabel('y (R_sun)')
     ax.set_title(f'Ray-tracing emission T_b at {frequencies_Hz[0]/1e9:.3f} GHz')
