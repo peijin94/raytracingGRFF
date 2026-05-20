@@ -13,36 +13,24 @@ matplotlib.use('Agg')
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-import ctypes
-from numpy.ctypeslib import ndpointer
-import os
+import sys
 from pathlib import Path
-
-# Import GRFF initialization function
-# Assuming GRFFcodes.py is in the same directory or in path
-try:
-    from GRFFcodes import initGET_MW
-except ImportError:
-    # If GRFFcodes is not available, define it here
-    def initGET_MW(libname):
-        _intp = ndpointer(dtype=ctypes.c_int32, flags='F')
-        _doublep = ndpointer(dtype=ctypes.c_double, flags='F')
-        
-        libc_mw = ctypes.CDLL(libname)
-        mwfunc = libc_mw.PyGET_MW
-        mwfunc.argtypes = [_intp, _doublep, _doublep, _doublep, _doublep, _doublep, _doublep]
-        mwfunc.restype = ctypes.c_int
-        return mwfunc
 
 # Constants
 R_sun = 6.957e10  # cm
-c = 2.998e10  # speed of light, cm/s
-kb = 1.38065e-16  # Boltzmann constant, erg/K
-sfu2cgs = 1e-19  # SFU to CGS conversion
 
-# GRFF library path
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-GRFF_LIB = str(PROJECT_ROOT / "GRFF" / "binaries" / "GRFF_DEM_Transfer.so")
+_grff_rs = Path(__file__).resolve().parents[1]
+if str(_grff_rs) not in sys.path:
+    sys.path.insert(0, str(_grff_rs))
+from raytracingGRFF.grff_ctypes import default_grff_lib_path, initGET_MW
+from raytracingGRFF.grff_parms import (
+    GRFF_PARMS_EXT_SIZE,
+    fill_grff_parms_ext_column,
+    rl_stokes_to_tb_vi,
+    vi_plot_vmax,
+)
+
+GRFF_LIB = str(default_grff_lib_path())
 
 
 def _save_center_pixel_plots(Ne_LOS, Te_LOS, B_LOS, ds_LOS, N_pix, R_sun, fname_output):
@@ -105,7 +93,17 @@ def _save_center_pixel_plots(Ne_LOS, Te_LOS, B_LOS, ds_LOS, N_pix, R_sun, fname_
     print(f"Center-pixel inspection plot saved to {plot_path}")
 
 
-def SyntheticFF(fname_input, freq0, Nfreq, freq_log_step, fname_output, do_inspection_plot=False):
+def SyntheticFF(
+    fname_input,
+    freq0,
+    Nfreq,
+    freq_log_step,
+    fname_output,
+    do_inspection_plot=False,
+    *,
+    grff_dist_e=0.0,
+    grff_kappa=0.0,
+):
     """
     Compute synthetic free-free brightness temperature and V/I from LOS data using GRFF.
 
@@ -186,18 +184,19 @@ def SyntheticFF(fname_input, freq0, Nfreq, freq_log_step, fname_output, do_inspe
             if N_valid == 0:
                 emission_cube[i, j, :] = 0.0
                 continue
-            Parms = np.zeros((15, N_valid), dtype='double', order='F')
+            Parms = np.zeros((GRFF_PARMS_EXT_SIZE, N_valid), dtype='double', order='F')
             for k in range(N_valid):
-                Parms[0, k] = ds_valid[k]
-                Parms[1, k] = te_valid[k]
-                Parms[2, k] = ne_valid[k]
-                Parms[3, k] = b_valid[k]
-                Parms[4, k] = 90.0
-                Parms[5, k] = 0.0
-                Parms[6, k] = 1 + 4
-                Parms[7, k] = 30
-                Parms[8, k] = Parms[9, k] = Parms[10, k] = 0.0
-                Parms[11, k] = Parms[12, k] = Parms[13, k] = Parms[14, k] = 0
+                fill_grff_parms_ext_column(
+                    Parms,
+                    k,
+                    ds_valid[k],
+                    te_valid[k],
+                    ne_valid[k],
+                    b_valid[k],
+                    s_cm2=0.0,
+                    dist_e=grff_dist_e,
+                    kappa=grff_kappa,
+                )
             Lparms_local = Lparms.copy()
             Lparms_local[0] = N_valid
             dummy_T = np.array(0, dtype='double')
@@ -208,16 +207,14 @@ def SyntheticFF(fname_input, freq0, Nfreq, freq_log_step, fname_output, do_inspe
                 res = GET_MW(Lparms_local, Rparms, Parms, dummy_T, dummy_DEM, dummy_DDM, RL)
                 if res != 0:
                     emission_cube[i, j, :] = 0.0
+                    emission_polVI_cube[i, j, :] = 0.0
                     continue
-                distance_cm = 1.49599e13
                 for ifreq in range(Nf):
-                    intensity = RL[5, ifreq] + RL[6, ifreq]
-                    circularpol_VI = (RL[5, ifreq] - RL[6, ifreq]) / (RL[5, ifreq] + RL[6, ifreq])
                     nu_GHz = RL[0, ifreq]
                     nu_Hz = frequencies_Hz[ifreq] if nu_GHz <= 0 else nu_GHz * 1e9
-                    conversion_factor = (sfu2cgs * c * c / (2.0 * kb * nu_Hz * nu_Hz) / Rparms[0]) * (distance_cm * distance_cm)
-                    emission_cube[i, j, ifreq] = intensity * conversion_factor
-                    emission_polVI_cube[i, j, ifreq] = circularpol_VI
+                    tb_k, vi = rl_stokes_to_tb_vi(RL, ifreq, nu_Hz, Rparms[0])
+                    emission_cube[i, j, ifreq] = tb_k
+                    emission_polVI_cube[i, j, ifreq] = vi
             except Exception as e:
                 print(f"Error processing pixel ({i}, {j}): {e}")
                 emission_cube[i, j, :] = 0.0
@@ -271,9 +268,7 @@ def SyntheticFF(fname_input, freq0, Nfreq, freq_log_step, fname_output, do_inspe
     plt.colorbar(im_tb, ax=ax_tb, label='T_b (K)')
     pol_vi_plot = emission_polVI_map_first.copy()
     pol_vi_plot[emission_map_first == 0] = np.nan
-    vmax_vi = np.nanmax(np.abs(pol_vi_plot))
-    if np.isnan(vmax_vi) or vmax_vi == 0:
-        vmax_vi = 1.0
+    vmax_vi = vi_plot_vmax(pol_vi_plot, emission_map_first)
     im_vi = ax_vi.imshow(pol_vi_plot, origin='lower', extent=[x_range[0], x_range[1], y_range[0], y_range[1]],
                          aspect='equal', cmap='RdBu_r', interpolation='bilinear', vmin=-vmax_vi, vmax=vmax_vi)
     ax_vi.set_xlabel('x (R_sun)')
@@ -326,6 +321,26 @@ if __name__ == '__main__':
                         help='log10 step between frequencies (default: 0.1)')
     parser.add_argument('--do-inspection-plot', action='store_true',
                         help='Save center-pixel LOS sampling plot (Ne, Te, B, ds along LOS)')
+    parser.add_argument(
+        '--grff-dist-e',
+        type=float,
+        default=0.0,
+        help='GRFF Dist_E: 0 Maxwellian (default), 1 kappa, 2 n-distribution',
+    )
+    parser.add_argument(
+        '--grff-kappa',
+        type=float,
+        default=0.0,
+        help='GRFF kappa index when --grff-dist-e is 1 or 2',
+    )
     args = parser.parse_args()
-    SyntheticFF(args.input, args.freq0, args.Nfreq, args.freq_log_step, args.output,
-                do_inspection_plot=args.do_inspection_plot)
+    SyntheticFF(
+        args.input,
+        args.freq0,
+        args.Nfreq,
+        args.freq_log_step,
+        args.output,
+        do_inspection_plot=args.do_inspection_plot,
+        grff_dist_e=args.grff_dist_e,
+        grff_kappa=args.grff_kappa,
+    )

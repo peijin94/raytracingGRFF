@@ -6,8 +6,9 @@ Similar to resampling_MAS_LOS.py but uses ray tracing (build_rays.ray_trace)
 instead of straight LOS. For a N_pix x N_pix image (default 64x64), each pixel
 has one ray from the observer (large z) backward along -z. At each ray point we
 sample Ne, Te, B from the model and pass segment lengths ds and cross-section
-ratio S to GRFF. Parms[14,k] is set to S_accumulated (cross-section ratio at
-that point, as source area factor for GRFF).
+ratio S to GRFF. Parms external row 14 is set to S times pixel area when enabled.
+GRFF 17-parameter external layout includes ``Dist_E`` (row 15) and ``kappa`` (row 16);
+see ``raytracingGRFF.grff_parms``.
 
 Output emission_cube is brightness temperature T_b in K: GRFF returns flux in
 SFU; we convert via Rayleigh-Jeans (I = 2*k_B*T_b*nu^2/c^2) and solid angle
@@ -39,6 +40,12 @@ from psipy.model.variable import Variable
 import sys
 from raytracingGRFF.build_rays import ray_trace, resample_to_xyz_cube, load_mas_var_filtered
 from raytracingGRFF.gpu_raytrace import sample_model_with_rays, trace_ray
+from raytracingGRFF.grff_ctypes import default_grff_lib_path, initGET_MW
+from raytracingGRFF.grff_parms import (
+    GRFF_PARMS_EXT_SIZE,
+    fill_grff_parms_ext_column,
+    rl_stokes_to_tb_vi,
+)
 from raytracingGRFF.util import patch_nan_emission_map
 
 warnings.filterwarnings('ignore')
@@ -75,23 +82,7 @@ R_sun_m = 6.957e8     # meters
 PHI0_OFFSET = 90     # default; override with --phi0-offset
 R_MIN = 0.999999
 
-# GRFF
-try:
-    from GRFFcodes import initGET_MW
-except ImportError:
-    from numpy.ctypeslib import ndpointer
-    import ctypes
-    def initGET_MW(libname):
-        _intp = ndpointer(dtype=ctypes.c_int32, flags='F')
-        _doublep = ndpointer(dtype=ctypes.c_double, flags='F')
-        libc_mw = ctypes.CDLL(libname)
-        mwfunc = libc_mw.PyGET_MW
-        mwfunc.argtypes = [_intp, _doublep, _doublep, _doublep, _doublep, _doublep, _doublep]
-        mwfunc.restype = ctypes.c_int
-        return mwfunc
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-GRFF_LIB = str(PROJECT_ROOT / "GRFF" / "binaries" / "GRFF_DEM_Transfer.so")
+GRFF_LIB = str(default_grff_lib_path())
 R_sun = 6.957e10  # cm (for synthetic_FF_map compatibility)
 c = 2.998e10     # speed of light, cm/s
 kb = 1.38065e-16 # Boltzmann constant, erg/K
@@ -171,7 +162,9 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
                               phi0_offset=0,
                               plot_log_norm=False,
                               plot_vmin=None,
-                              plot_vmax=None):
+                              plot_vmax=None,
+                              grff_dist_e=0.0,
+                              grff_kappa=0.0):
     """
     Run ray tracing for each pixel, sample Ne/Te/B along rays, and compute GRFF emission.
 
@@ -225,6 +218,10 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
         If True, emission map PNG uses matplotlib LogNorm (needs plot_vmin > 0).
     plot_vmin, plot_vmax : float or None
         Color scale limits for emission PNG; if None, linear scale uses 0 and data max.
+    grff_dist_e : float
+        GRFF external Parms row 15: electron distribution (0 Maxwellian, 1 kappa, 2 n).
+    grff_kappa : float
+        GRFF external Parms row 16: kappa or n index when ``grff_dist_e`` is 1 or 2; ignored for 0.
 
     Returns
     -------
@@ -248,6 +245,11 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
             print("Loading GRFF library...")
         GET_MW = initGET_MW(str(lib_path))
     elif backend == 'fastgrff':
+        if float(grff_dist_e) != 0.0 or float(grff_kappa) != 0.0:
+            raise ValueError(
+                "fastGRFF GPU backend uses a fixed 15-parameter layout; non-Maxwellian "
+                "Dist_E/kappa requires --grff-backend get_mw with an updated GRFF .so."
+            )
         try:
             import cupy as cp
             sys.path.insert(0, str((PROJECT_ROOT / "fastGRFF").resolve()))
@@ -514,19 +516,20 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
             n_pts = len(ne_ray)
 
             N_valid = n_pts
-            Parms = np.zeros((15, N_valid), dtype='double', order='F')
+            Parms = np.zeros((GRFF_PARMS_EXT_SIZE, N_valid), dtype='double', order='F')
             for k in range(N_valid):
-                Parms[0, k] = ds_ray[k]
-                Parms[1, k] = te_ray[k]
-                Parms[2, k] = ne_ray[k]
-                Parms[3, k] = b_ray[k]
-                Parms[4, k] = 90.0
-                Parms[5, k] = 0.0
-                Parms[6, k] = 1 + 4
-                Parms[7, k] = 30
-                Parms[8, k] = Parms[9, k] = Parms[10, k] = 0.0
-                Parms[11, k] = Parms[12, k] = Parms[13, k] = 0.0
-                Parms[14, k] = S_valid[k]*pixel_area_cm2 if s_input_on else 0.0  # S (cross-section) or 0
+                s_row = S_valid[k] * pixel_area_cm2 if s_input_on else 0.0
+                fill_grff_parms_ext_column(
+                    Parms,
+                    k,
+                    ds_ray[k],
+                    te_ray[k],
+                    ne_ray[k],
+                    b_ray[k],
+                    s_cm2=float(s_row),
+                    dist_e=grff_dist_e,
+                    kappa=grff_kappa,
+                )
             Lparms_local = Lparms.copy()
             Lparms_local[0] = N_valid
             dummy_T = np.array(0, dtype='double')
@@ -539,13 +542,11 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
                     emission_cube[i, j, :] = 0.0
                     continue
                 for ifreq in range(Nf):
-                    intensity_sfu = RL[5, ifreq] + RL[6, ifreq]  # total intensity from GRFF (SFU)
-                    circularpol_VI = (RL[5, ifreq] - RL[6, ifreq]) / (RL[5, ifreq] + RL[6, ifreq] + 1e-30)
                     nu_GHz = RL[0, ifreq]
                     nu_Hz = frequencies_Hz[ifreq] if nu_GHz <= 0 else nu_GHz * 1e9
-                    conversion_factor = (sfu2cgs * c * c / (2.0 * kb * nu_Hz * nu_Hz) / Rparms[0]) * (AU_cm * AU_cm)
-                    emission_cube[i, j, ifreq] = intensity_sfu * conversion_factor  # brightness temperature in K
-                    emission_polVI_cube[i, j, ifreq] = circularpol_VI
+                    tb_k, vi = rl_stokes_to_tb_vi(RL, ifreq, nu_Hz, Rparms[0])
+                    emission_cube[i, j, ifreq] = tb_k
+                    emission_polVI_cube[i, j, ifreq] = vi
             except Exception as e:
                 if verbose:
                     print(f"  Error pixel ({i},{j}): {e}")
@@ -788,6 +789,18 @@ def main():
                         help='Beam FWHM in R_sun (default: 0.2)')
     parser.add_argument('--phi0-offset', type=float, default=0,
                         help='Longitude offset in degrees for MAS spherical coords (default: 0)')
+    parser.add_argument(
+        '--grff-dist-e',
+        type=float,
+        default=0.0,
+        help='GRFF Dist_E: 0 Maxwellian (default), 1 kappa distribution, 2 n-distribution',
+    )
+    parser.add_argument(
+        '--grff-kappa',
+        type=float,
+        default=0.0,
+        help='GRFF kappa index (Parms[16]); used when --grff-dist-e is 1 or 2',
+    )
     parser.add_argument('--no-fallback', action='store_true',
                         help='If --device cuda fails, do not fall back to cpu')
     parser.add_argument('--no-plots', action='store_true', help='Do not save plot')
@@ -821,6 +834,8 @@ def main():
         consider_beam=args.consider_beam,
         beam_fwhm=args.beam_fwhm,
         phi0_offset=args.phi0_offset,
+        grff_dist_e=args.grff_dist_e,
+        grff_kappa=args.grff_kappa,
     )
 
 

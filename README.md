@@ -11,7 +11,7 @@ Synthetic radio free-free emission from a MAS coronal model using GRFF.
 
 ## Layout
 
-- `raytracingGRFF/`: installable Python package (ray tracing and LOS sampling code)
+- `raytracingGRFF/`: installable Python package (ray tracing and LOS sampling code; includes `grff_parms.py` for GRFF `PyGET_MW` voxel layout)
 - `script/`: runnable workflows
 - `fastGRFF/`: external module; not included in `raytracingGRFF` packaging
 
@@ -51,6 +51,22 @@ Parameters:
 
 Note: `--dz0` is in `R_sun`; `7e4` is invalid for this use case. Use values like `7e-4`.
 
+### GRFF `PyGET_MW` parameters (kappa / non-thermal)
+
+Updated GRFF expects **17** doubles per LOS voxel (Fortran `(17, Nz)`), matching GRFF `InSize_ext` and `getparms` `arr3`. Summary:
+
+| Row | GRFF name | Role in this repo |
+|-----|-----------|-------------------|
+| 0–7 | `dR`, plasma, angles, mechanism, `s_max` | `ds`, `T_e`, `N_e`, `B`, viewing angle, emission flags |
+| 8–13 | neutrals, DEM/DDM keys, abundance | Usually zero (solar ionization when T_e is below 1e5 K) |
+| 14 | `S_loc` | Source area (cm²); ray workflow: `S ×` pixel area when `--s-input-on` |
+| 15 | `Dist_E` | **0** Maxwellian, **1** kappa, **2** n-distribution |
+| 16 | `kappa` | Kappa or n index when `Dist_E` is 1 or 2 |
+
+Python helper: `raytracingGRFF.grff_parms.fill_grff_parms_ext_column`.
+
+The optional **fastGRFF** GPU backend uses a fixed **15**-parameter layout; use **`--grff-backend get_mw`** when `Dist_E` or `kappa` must be non-zero.
+
 ### `script/synthetic_FF_map_single_thread.py`
 
 Non-raytracing baseline: compute synthetic free-free map from LOS `.npz` using GRFF.
@@ -71,6 +87,8 @@ Parameters:
 | `-n`, `--Nfreq` | `int` | `4` | Number of frequency channels. |
 | `-s`, `--freq-log-step` | `float` | `0.1` | `log10` step between frequencies. |
 | `--do-inspection-plot` | flag | `False` | Save center-pixel LOS inspection plot. |
+| `--grff-dist-e` | `float` | `0.0` | GRFF `Dist_E`: 0 Maxwellian, 1 kappa, 2 n-distribution. |
+| `--grff-kappa` | `float` | `0.0` | Kappa / n index when `--grff-dist-e` is 1 or 2. |
 
 ### `script/resample_with_ray_tracing.py`
 
@@ -107,6 +125,8 @@ Parameters:
 | `--grff-lib` | `str` | `GRFF/binaries/GRFF_DEM_Transfer.so` | Path to GRFF shared library. |
 | `--grff-backend` | `str` | `get_mw` | `get_mw` or `fastgrff`. |
 | `--s-input-on` | flag | `False` | Pass cross-section ratio `S` into `Parms[14]`. |
+| `--grff-dist-e` | `float` | `0.0` | GRFF `Dist_E` (0 Maxwellian, 1 kappa, 2 n); requires `--grff-backend get_mw` if non-zero. |
+| `--grff-kappa` | `float` | `0.0` | GRFF kappa / n index (`Parms[16]`) when `Dist_E` is 1 or 2. |
 | `--device` | `str` | `cpu` | LOS sampler device: `cpu` or `cuda`. |
 | `--raytrace-device` | `str` | `cpu` | Ray integrator device: `cpu` or `cuda`. |
 | `--no-fallback` | flag | `False` | Disable CUDA-to-CPU fallback. |

@@ -220,11 +220,11 @@ def resample_MAS(model_path, N_pix, X_range, Y_range, N_z, dz0, variable_spacing
         for j in range(N_pix):
             x = X[i, j]
             y = Y[i, j]
-
-            if np.sqrt(x**2 + y**2) < R_sun_m:
-                z_start = np.sqrt(R_sun_m**2 - (x**2 + y**2)) - 1e-6
+            rho_xy = np.hypot(x, y)
+            if rho_xy < R_sun_m:
+                z_start = np.sqrt(max(R_sun_m**2 - rho_xy**2, 0.0)) - 1e-6
             else:
-                z_start = -np.sqrt(x**2 + y**2- R_sun_m**2) -1e-6
+                z_start = -np.sqrt(max(rho_xy**2 - R_sun_m**2, 0.0)) - 1e-6
 
             x_arr = np.full(N_z, x)
             y_arr = np.full(N_z, y)
