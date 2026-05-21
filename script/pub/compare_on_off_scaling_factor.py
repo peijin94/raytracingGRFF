@@ -226,8 +226,6 @@ def main():
             fallback_to_cpu=not args.no_fallback,
             raytrace_device=args.raytrace_device,
             grff_backend="get_mw",
-            consider_beam=False,
-            beam_fwhm=0.1,
             phi0_offset=args.phi0_offset,
         )
         if not args.quiet:

@@ -4,7 +4,16 @@ from .build_rays import C_R, load_mas_var_filtered, ray_trace, resample_to_xyz_c
 from .gpu_raytrace import sample_model_with_rays, trace_ray
 from .grff_ctypes import default_grff_lib_path, initGET_MW
 from .grff_parms import GRFF_PARMS_EXT_SIZE, fill_grff_parms_ext_column, rl_stokes_to_tb_vi, vi_plot_vmax
-from .util import patch_nan_emission_map
+from .util import (
+    AU_M,
+    MAP_RSUN_PER_RADIAN,
+    SUN_ANGULAR_DIAMETER_ARCMIN,
+    SUN_ANGULAR_RADIUS_ARCMIN,
+    beam_fwhm_from_lambda_over_d,
+    convolve_tb_gaussian_beam,
+    format_beam_summary,
+    patch_nan_emission_map,
+)
 
 __all__ = [
     "C_R",
@@ -15,6 +24,13 @@ __all__ = [
     "rl_stokes_to_tb_vi",
     "vi_plot_vmax",
     "load_mas_var_filtered",
+    "AU_M",
+    "MAP_RSUN_PER_RADIAN",
+    "SUN_ANGULAR_DIAMETER_ARCMIN",
+    "SUN_ANGULAR_RADIUS_ARCMIN",
+    "beam_fwhm_from_lambda_over_d",
+    "format_beam_summary",
+    "convolve_tb_gaussian_beam",
     "patch_nan_emission_map",
     "ray_trace",
     "resample_to_xyz_cube",

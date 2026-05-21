@@ -225,8 +225,8 @@ def main():
     parser.add_argument("--raytrace-device", default="cuda", choices=["cpu", "cuda"], help="Raytrace device")
     parser.add_argument("--workers", type=int, default=1, help="CPU raytrace workers")
     parser.add_argument("--no-fallback", action="store_true", help="Disable CUDA->CPU fallback")
-    parser.add_argument("--consider-beam", action="store_true", help="Apply beam in ray-tracing map")
-    parser.add_argument("--beam-fwhm", type=float, default=0.1, help="Beam FWHM in R_sun")
+    parser.add_argument("--beam-fwhm-rsun", type=float, default=None, help="Gaussian beam FWHM in R_sun")
+    parser.add_argument("--beam-diameter-m", type=float, default=None, help="Telescope D (m) for λ/D beam")
 
     # Frequency scaling controls
     parser.add_argument("--ref-freq-mhz", type=float, default=100.0, help="Reference frequency for scaling")
@@ -326,8 +326,8 @@ def main():
                 fallback_to_cpu=not args.no_fallback,
                 raytrace_device=args.raytrace_device,
                 grff_backend="get_mw",
-                consider_beam=args.consider_beam,
-                beam_fwhm=args.beam_fwhm,
+                beam_fwhm_rsun=args.beam_fwhm_rsun,
+                beam_diameter_m=args.beam_diameter_m,
                 phi0_offset=args.phi0_offset,
             )
             ray_map = np.nan_to_num(ray_res["emission_cube"][:, :, 0], nan=0.0, posinf=0.0, neginf=0.0)

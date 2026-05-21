@@ -46,7 +46,12 @@ from raytracingGRFF.grff_parms import (
     fill_grff_parms_ext_column,
     rl_stokes_to_tb_vi,
 )
-from raytracingGRFF.util import patch_nan_emission_map
+from raytracingGRFF.util import (
+    beam_fwhm_from_lambda_over_d,
+    convolve_tb_gaussian_beam,
+    format_beam_summary,
+    patch_nan_emission_map,
+)
 
 warnings.filterwarnings('ignore')
 
@@ -157,12 +162,14 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
                               device='cpu', fallback_to_cpu=True,
                               raytrace_device='cpu',
                               grff_backend='get_mw',
-                              consider_beam=False,
-                              beam_fwhm=0.2,
+                              beam_fwhm_rsun=None,
+                              beam_diameter_m=None,
+                              beam_fwhm_factor=1.22,
                               phi0_offset=0,
                               plot_log_norm=False,
                               plot_vmin=None,
                               plot_vmax=None,
+                              plot_beam=True,
                               grff_dist_e=0.0,
                               grff_kappa=0.0):
     """
@@ -208,16 +215,21 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
         Ray integration device: 'cpu' (default) or 'cuda'.
     grff_backend : str
         'get_mw' (default CPU library call) or 'fastgrff' (GPU get_mw_slice).
-    consider_beam : bool
-        If True, convolve with beam.
-    beam_fwhm : float
-        Beam FWHM in R_sun.
+    beam_fwhm_rsun : float or None
+        If set, convolve with Gaussian FWHM in R_sun (e.g. 0.1).
+    beam_diameter_m : float or None
+        If set, convolve with θ_FWHM ≈ ``beam_fwhm_factor * λ / D`` at ``freq_hz``.
+        Takes precedence over ``beam_fwhm_rsun`` when both are set.
+    beam_fwhm_factor : float
+        Multiplier in θ = factor * λ/D (default 1.22 HPBW; use 1.0 for Gaussian λ/D).
     phi0_offset : float
         Longitude offset in degrees for MAS spherical coords (default 0).
     plot_log_norm : bool
         If True, emission map PNG uses matplotlib LogNorm (needs plot_vmin > 0).
     plot_vmin, plot_vmax : float or None
         Color scale limits for emission PNG; if None, linear scale uses 0 and data max.
+    plot_beam : bool
+        If True and a beam FWHM is set, draw a white circle (beam shape) at the lower left.
     grff_dist_e : float
         GRFF external Parms row 15: electron distribution (0 Maxwellian, 1 kappa, 2 n).
     grff_kappa : float
@@ -558,6 +570,26 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
     # Replace any remaining NaN (e.g. disk center, R<1 sampling) with 0
     emission_cube = np.nan_to_num(emission_cube, nan=0.0, posinf=0.0, neginf=0.0)
 
+    beam_fwhm_rsun_applied = None
+    beam_meta = {}
+    if beam_diameter_m is not None:
+        beam_meta = beam_fwhm_from_lambda_over_d(
+            freq_hz, beam_diameter_m, fwhm_factor=beam_fwhm_factor
+        )
+        beam_fwhm_rsun_applied = beam_meta["fwhm_rsun"]
+        if verbose:
+            print(
+                f"Beam λ/D: D={beam_diameter_m:.3g} m, ν={freq_hz/1e6:.3f} MHz — "
+                f"{format_beam_summary(beam_meta, x_fov_rsun=X_fov)}"
+            )
+    elif beam_fwhm_rsun is not None:
+        beam_fwhm_rsun_applied = float(beam_fwhm_rsun)
+        if verbose:
+            print(f"Convolving T_b with Gaussian beam FWHM {beam_fwhm_rsun_applied:.6g} R_sun")
+    if beam_fwhm_rsun_applied is not None:
+        emission_cube = convolve_tb_gaussian_beam(
+            emission_cube, x_coords, beam_fwhm_rsun=beam_fwhm_rsun_applied
+        )
 
     result = {
         'emission_cube': emission_cube,       # T_b (K), shape (N_pix, N_pix, Nf)
@@ -566,6 +598,13 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
         'x_coords': x_coords,
         'y_coords': y_coords,
     }
+    if beam_fwhm_rsun_applied is not None:
+        result['beam_fwhm_rsun'] = np.float64(beam_fwhm_rsun_applied)
+        if beam_diameter_m is not None:
+            result['beam_diameter_m'] = np.float64(beam_diameter_m)
+            result['beam_fwhm_factor'] = np.float64(beam_fwhm_factor)
+            result['beam_fwhm_arcsec'] = np.float64(beam_meta.get("fwhm_arcsec", np.nan))
+            result['beam_fwhm_arcmin'] = np.float64(beam_meta.get("fwhm_arcmin", np.nan))
     np.savez_compressed(out_path, **result)
     if verbose:
         print(f"Saved {out_path}")
@@ -578,11 +617,11 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
             R_sun_m,
             out_path,
             verbose,
-            consider_beam,
-            beam_fwhm,
+            beam_fwhm_rsun_applied,
             plot_log_norm=plot_log_norm,
             plot_vmin=plot_vmin,
             plot_vmax=plot_vmax,
+            plot_beam=plot_beam,
         )
         _save_center_pixel_plots(
             sampled, N_pix, out_path, verbose,
@@ -652,11 +691,11 @@ def _save_emission_plot(
     R_sun_m,
     out_path,
     verbose,
-    consider_beam,
-    beam_fwhm,
+    beam_fwhm_rsun_applied,
     plot_log_norm=False,
     plot_vmin=None,
     plot_vmax=None,
+    plot_beam=True,
 ):
     emission_cube = result['emission_cube']
     x_coords = result['x_coords']
@@ -672,15 +711,6 @@ def _save_emission_plot(
     x_range = [x_coords[0] / R_sun_m, x_coords[-1] / R_sun_m]
     y_range = [y_coords[0] / R_sun_m, y_coords[-1] / R_sun_m]
 
-    if consider_beam:
-        # convolve the emission map with a Gaussian beam
-        from scipy.ndimage import gaussian_filter
-        beam_radius_pix = beam_fwhm / (x_range[-1] - x_range[0]) * N_pix
-
-        print(f"Convolving emission map with a Gaussian beam of FWHM {beam_fwhm} R_sun ({beam_radius_pix} pixels)")
-        emission_map = gaussian_filter(emission_map, sigma=beam_radius_pix)
-
-  
     fig, ax = plt.subplots(figsize=(6, 4.8))
     if sunpy_ct is not None:
         try:
@@ -728,12 +758,23 @@ def _save_emission_plot(
     ax.set_ylabel('y (R_sun)')
     ax.set_title(f'Ray-tracing emission T_b at {frequencies_Hz[0]/1e9:.3f} GHz')
 
-
-    # draw beam shape
-    if consider_beam:
-        ax.add_patch(plt.Circle((-0.8*X_fov, -0.8*X_fov), beam_fwhm, color='white', fill=False, linewidth=1.5))
-      
-
+    beam_rsun = beam_fwhm_rsun_applied
+    if beam_rsun is None and "beam_fwhm_rsun" in result:
+        beam_rsun = float(result["beam_fwhm_rsun"])
+    if plot_beam and beam_rsun is not None and beam_rsun > 0:
+        margin = 0.06 * (x_range[1] - x_range[0])
+        cx = x_range[0] + float(beam_rsun) + margin
+        cy = y_range[0] + float(beam_rsun) + margin
+        ax.add_patch(
+            plt.Circle(
+                (cx, cy),
+                float(beam_rsun),
+                edgecolor="white",
+                facecolor="none",
+                linewidth=1.5,
+                linestyle="-",
+            )
+        )
 
     plt.colorbar(im, ax=ax, label='T_b (K)')
     plt.tight_layout()
@@ -782,11 +823,12 @@ def main():
     parser.add_argument('--raytrace-device', type=str, default='cpu', choices=['cpu', 'cuda'],
                         help="Ray integration device: 'cpu' (default) or 'cuda'")
 
-    parser.add_argument('--consider-beam', action='store_true',
-                        help='Consider beam shape of telescope in emission map')
-
-    parser.add_argument('--beam-fwhm', type=float, default=0.2,
-                        help='Beam FWHM in R_sun (default: 0.2)')
+    parser.add_argument('--beam-fwhm-rsun', type=float, default=None,
+                        help='Gaussian beam FWHM in R_sun (e.g. 0.1)')
+    parser.add_argument('--beam-diameter-m', type=float, default=None,
+                        help='Telescope diameter D (m): θ=beam-fwhm-factor*λ/D at channel frequency')
+    parser.add_argument('--beam-fwhm-factor', type=float, default=1.22,
+                        help='θ = factor*λ/D (default 1.22 HPBW; 1.0 for Gaussian λ/D)')
     parser.add_argument('--phi0-offset', type=float, default=0,
                         help='Longitude offset in degrees for MAS spherical coords (default: 0)')
     parser.add_argument(
@@ -804,6 +846,12 @@ def main():
     parser.add_argument('--no-fallback', action='store_true',
                         help='If --device cuda fails, do not fall back to cpu')
     parser.add_argument('--no-plots', action='store_true', help='Do not save plot')
+    parser.add_argument(
+        '--plot-beam',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Draw beam FWHM circle at lower left when a beam is set (default: on)',
+    )
     parser.add_argument('--quiet', '-q', action='store_true', help='Less output')
     args = parser.parse_args()
 
@@ -831,9 +879,11 @@ def main():
         fallback_to_cpu=not args.no_fallback,
         raytrace_device=args.raytrace_device,
         grff_backend=args.grff_backend,
-        consider_beam=args.consider_beam,
-        beam_fwhm=args.beam_fwhm,
+        beam_fwhm_rsun=args.beam_fwhm_rsun,
+        beam_diameter_m=args.beam_diameter_m,
+        beam_fwhm_factor=args.beam_fwhm_factor,
         phi0_offset=args.phi0_offset,
+        plot_beam=args.plot_beam,
         grff_dist_e=args.grff_dist_e,
         grff_kappa=args.grff_kappa,
     )

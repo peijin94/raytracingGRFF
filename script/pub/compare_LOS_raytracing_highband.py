@@ -281,8 +281,6 @@ def main():
                 fallback_to_cpu=not args.no_fallback,
                 raytrace_device=args.raytrace_device,
                 grff_backend="get_mw",
-                consider_beam=False,
-                beam_fwhm=0.1,
                 phi0_offset=args.phi0_offset,
             )
             ray_map = np.nan_to_num(ray_res["emission_cube"][:, :, 0], nan=0.0, posinf=0.0, neginf=0.0)

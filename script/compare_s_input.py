@@ -66,10 +66,10 @@ def main():
                         help='GRFF backend (default: fastgrff)')
     parser.add_argument('--device', type=str, default='cuda', choices=['cpu', 'cuda'],
                         help='LOS/GRFF device (default: cuda)')
-    parser.add_argument('--consider-beam', action='store_true',
-                        help='Apply beam')
-    parser.add_argument('--beam-fwhm', type=float, default=0.1,
-                        help='Beam FWHM in R_sun (default: 0.1)')
+    parser.add_argument('--beam-fwhm-rsun', type=float, default=None,
+                        help='Gaussian beam FWHM in R_sun')
+    parser.add_argument('--beam-diameter-m', type=float, default=None,
+                        help='Telescope D (m) for λ/D beam')
     parser.add_argument('--no-fallback', action='store_true',
                         help='Do not fall back to CPU')
     parser.add_argument('--skip-run', action='store_true',
@@ -97,8 +97,10 @@ def main():
         '--grff-backend', args.grff_backend,
         '--device', args.device,
     ]
-    if args.consider_beam:
-        base_extra += ['--consider-beam', '--beam-fwhm', str(args.beam_fwhm)]
+    if args.beam_fwhm_rsun is not None:
+        base_extra += ['--beam-fwhm-rsun', str(args.beam_fwhm_rsun)]
+    if args.beam_diameter_m is not None:
+        base_extra += ['--beam-diameter-m', str(args.beam_diameter_m)]
     if args.no_fallback:
         base_extra.append('--no-fallback')
 
