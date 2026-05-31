@@ -11,10 +11,11 @@ build/
 
 # Jupyter
 .ipynb_checkpoints/
+*.ipynb
 
 # Logs (CASA, local runs)
 *.log
-casa-*.log
+**/casa-*.log
 
 # MAS model data (large; keep outside repo or symlink)
 corona/
