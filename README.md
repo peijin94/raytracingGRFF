@@ -131,7 +131,52 @@ Parameters:
 | `--raytrace-device` | `str` | `cpu` | Ray integrator device: `cpu` or `cuda`. |
 | `--no-fallback` | flag | `False` | Disable CUDA-to-CPU fallback. |
 | `--no-plots` | flag | `False` | Disable emission map plot output. |
+| `--phi0-offset` | `float` | `0` | Longitude offset (deg) for MAS spherical coords; see below. |
 | `-q`, `--quiet` | flag | `False` | Reduce log output. |
+
+### MAS coordinate system and `phi0_offset`
+
+MAS (PSI *Magnetohydrodynamics Around a Sphere*) stores fields on a **Carrington spherical grid** \((r, \theta, \varphi)\): radius in \(R_\odot\), **co-latitude** \(\theta\) (0 at north pole), longitude \(\varphi \in [0, 2\pi)\). In Python/psipy, arrays have shape **`(N_φ, N_θ, N_r)`**; psipy exposes **latitude** \(=\pi/2 - \theta\) when sampling. See [psi-io](https://predsci.com/doc/psi-io/guide/overview.html) and [psipy](https://psipy.readthedocs.io/en/stable/guide/getting_started.html).
+
+**PSI Cartesian** (used by pyvisual and standard spherical↔Cartesian formulas): **\(+\hat z\) points to solar north**. With co-latitude \(\theta\) and Carrington longitude \(\varphi\),
+
+```text
+X = r sinθ cosφ,   Y = r sinθ sinφ,   Z = r cosθ
+```
+
+**GRFFradioSun image frame** \((x, y, z)\) in \(R_\odot\) maps to PSI Cartesian as **`(X, Y, Z) = (x, y, -z)`**. All LOS and ray-tracing scripts therefore call:
+
+```text
+cart_to_sph(x, -z, y, phi0_offset)
+```
+
+which yields MAS longitude/latitude for `psipy.Variable.sample_at_coords(lon, lat, r)`:
+
+```text
+r     = sqrt(x² + y² + z²)
+colat = arccos(-z / r)
+lon   = arctan2(y, x) + phi0_offset   (degrees)
+lat   = 90° − colat
+```
+
+**`phishift`** in a MAS `omas` file is the longitude offset used when the model was run (e.g. `phishift=0` for `corona2298`). **`phi0_offset`** is a separate rotation applied at sampling time to align the synthetic image with an observer.
+
+| `--phi0-offset` | Effect |
+|-----------------|--------|
+| `0` (ray-tracing CLI default) | Image \(+x\) → MAS \(\varphi = 0°\); not Earth-aligned on a given date. |
+| `≈ −L0` | Earth-aligned: disk-center Carrington longitude matches the observation. **L0** = Carrington longitude of disk center (SunPy `sun.L0`). |
+
+```python
+from astropy.time import Time
+from sunpy.coordinates import sun
+
+t = Time("2025-06-08T20:07:00", scale="utc")
+phi0_offset = -sun.L0(t).to_value("deg")   # L0 ≈ +141° → phi0 ≈ −141°
+```
+
+Pass to LOS / ray-tracing, e.g. `--phi0-offset -141`. For **`corona2298`** (CR 2298), `script/pub/` and `kappatest` often use **−140°**; fine-tune against a known coronal feature.
+
+**COROTATING** models (`calculation_frame='COROTATING'` in `omas`) use a grid that co-rotates with the Sun; \(\varphi\) is Carrington longitude. Match the observation epoch to the model Carrington rotation when comparing to data.
 
 ## Validation
 

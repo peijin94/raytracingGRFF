@@ -1,6 +1,6 @@
 # GRFFradioSun — project memory
 
-Notes for future sessions (human + agent). Last updated after kappa / limb-quality work.
+Notes for future sessions (human + agent). Last updated after PSI MAS coordinate documentation.
 
 ## Purpose
 
@@ -46,10 +46,95 @@ Loader: `raytracingGRFF.grff_ctypes.initGET_MW`, `default_grff_lib_path()`.
 
 ## MAS / coordinates
 
-- LOS resampling uses **`cart_to_sph(x, -z, y, phi0_offset)`** (not raw `y` as vertical in spherical conversion).
-- **`phi0_offset`** must match the model / observation geometry (often **−140°** for `corona2298` in kappatest; ray script default was 90° — override with `--phi0-offset`).
-- **`r_min ≈ 1 R☉`** masks points inside the photosphere; invalid samples → `NaN` in LOS cubes.
-- **Limb stability**: use `np.hypot(x,y)` and `max(radicand, 0)` for `z_start` so float noise at ρ ≈ R☉ does not produce NaN LOS.
+Reference: PSI *MAS Coordinate System* (internal PSI doc); public equivalents in [psi-io overview](https://predsci.com/doc/psi-io/guide/overview.html), [pyvisual coordinates](https://predsci.com/doc/pyvisual/guide/overview.html), [psipy getting started](https://psipy.readthedocs.io/en/stable/guide/getting_started.html).
+
+### PSI MAS native grid
+
+MAS solves MHD on a **staggered spherical grid** \((r, \theta, \varphi)\):
+
+| Symbol | Name | Range | Units in HDF |
+|--------|------|-------|--------------|
+| \(r\) | radius | \(r \geq 1\,R_\odot\) | \(R_\odot\) |
+| \(\theta\) | **co-latitude** (0 at north pole) | \([0, \pi]\) | radians |
+| \(\varphi\) | **Carrington longitude** | \([0, 2\pi)\) | radians |
+
+- NumPy / psipy array shape: **`(N_φ, N_θ, N_r)`** — φ slowest, \(r\) fastest ([psi-io](https://predsci.com/doc/psi-io/guide/overview.html)).
+- psipy converts HDF co-latitude → **latitude** on read (`theta_lat = π/2 − theta_colat` in `psipy/io/mas.py`).
+- Vector components: **`br`, `bt`, `bp`** (radial, co-latitude, longitude); scalars (`rho`, `te`, `t`, …) on cell corners.
+- **PSI Cartesian** (visualization frame): \((X,Y,Z)\) with **`+Ẑ` = solar north** ([pyvisual](https://predsci.com/doc/pyvisual/guide/overview.html)). Standard map:
+  - \(X = r\sin\theta\cos\varphi\), \(Y = r\sin\theta\sin\varphi\), \(Z = r\cos\theta\).
+
+**Simulation frame** (`omas` namelist):
+
+- `calculation_frame='COROTATING'`: grid co-rotates with the Sun; \(\varphi\) is **Carrington longitude** (not inertial).
+- `phishift` (degrees): longitude offset **baked into the MAS run** when the model was generated (`phishift=0` for `corona2298`). This is **not** the same as `phi0_offset` below.
+
+### GRFFradioSun observer / image frame
+
+Scripts use a **square image** in \(R_\odot\): pixel coords \((x_\mathrm{img}, y_\mathrm{img}, z_\mathrm{img})\).
+
+- \(x_\mathrm{img}, y_\mathrm{img}\): disk plane, FOV \([-X_\mathrm{fov}, X_\mathrm{fov}]\).
+- \(z_\mathrm{img}\): height above disk / along LOS (observer at large \(+z\); rays launched from \(z_\mathrm{start}(x,y)\)).
+
+**Axis map to PSI Cartesian** (implemented everywhere as `cart_to_sph(x, -z, y, phi0_offset)`):
+
+```text
+X_psi = x_img
+Y_psi = y_img
+Z_psi = -z_img        # image −ẑ ≈ solar north
+```
+
+Spherical conversion (`LOS/resample_MAS_LOS.py`, `script/resample_with_ray_tracing.py`):
+
+```text
+r     = sqrt(x_img² + y_img² + z_img²)
+colat = arccos(Z_psi / r) = arccos(-z_img / r)
+lon   = arctan2(Y_psi, X_psi) + phi0_offset  [deg → rad]
+lat   = π/2 − colat                          [for psipy]
+```
+
+Sampling: `var.sample_at_coords(lon_deg, lat_deg, r * u.R_sun)` — **longitude and latitude in degrees**, \(r\) in solar radii.
+
+**Do not** call `cart_to_sph(x, y, z)` without the `(x, -z, y)` permutation; that breaks alignment with PSI north and Carrington φ.
+
+### `phi0_offset` vs Carrington / Earth view
+
+`phi0_offset` (degrees) is an **extra longitude rotation** applied when mapping the image frame onto the MAS \(\varphi\) grid. It is **not** auto-derived from UTC in any script.
+
+| Setting | Meaning |
+|---------|---------|
+| **`phi0_offset = 0`** | Image \(+x\) axis → MAS \(\varphi = 0°\). Fixed lab frame; **not** Earth central meridian on a given date. |
+| **`phi0_offset ≈ −L0`** | Earth-aligned map: disk center Carrington longitude matches observation. **L0** = apparent Carrington longitude of disk center (SunPy `sunpy.coordinates.sun.L0`). |
+
+Carrington/Stonyhurst relation at disk center: \(\Phi_C \approx \Phi_S + L_0\) (see [SunPy coordinates](https://docs.sunpy.org/en/stable/reference/coordinates/index.html)).
+
+**`corona2298` example** (CR 2298, `phishift=0`, run 2025‑06‑26):
+
+- Observation **2025‑06‑08 20:07 UTC** → L0 ≈ **+141.3°** → **`--phi0-offset -141`** (pub scripts often use **−140°**; fine-tune on a known feature).
+
+```python
+from astropy.time import Time
+from sunpy.coordinates import sun
+
+t = Time("2025-06-08T20:07:00", scale="utc")
+phi0_offset = -sun.L0(t).to_value("deg")
+```
+
+### Repo defaults (easy to confuse)
+
+| Script / area | Default `phi0_offset` |
+|---------------|----------------------|
+| `resample_with_ray_tracing.py` CLI | `0` |
+| `script/pub/*.py`, `kappatest` | `−140` |
+| `LOS/resample_MAS_LOS.py` module constant | `24` (legacy; CLI default `0`) |
+| `build_rays.py` `PHI0_OFFSET` | `90` (only if calling helpers without override) |
+
+Always pass **`--phi0-offset` explicitly** for publication-quality Earth alignment.
+
+### Sampling guards
+
+- **`r_min ≈ 1 R☉`**: mask inside photosphere; invalid → `NaN`.
+- **Limb stability**: `np.hypot(x,y)` and `max(radicand, 0)` for `z_start` so float noise at \(\rho \approx R_\odot\) does not NaN the LOS.
 
 ## Brightness temperature & V/I
 
