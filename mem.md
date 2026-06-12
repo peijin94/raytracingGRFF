@@ -110,7 +110,7 @@ Carrington/Stonyhurst relation at disk center: \(\Phi_C \approx \Phi_S + L_0\) (
 
 **`corona2298` example** (CR 2298, `phishift=0`, run 2025‑06‑26):
 
-- Observation **2025‑06‑08 20:07 UTC** → L0 ≈ **+141.3°** → **`--phi0-offset -141`** (pub scripts often use **−140°**; fine-tune on a known feature).
+- Observation **2025‑06‑08 20:07 UTC** → L0 ≈ **+141.3°** → **`--phi0-offset -141`** (pub scripts use **−129°** after feature alignment; tune on a known feature).
 
 ```python
 from astropy.time import Time
@@ -125,7 +125,8 @@ phi0_offset = -sun.L0(t).to_value("deg")
 | Script / area | Default `phi0_offset` |
 |---------------|----------------------|
 | `resample_with_ray_tracing.py` CLI | `0` |
-| `script/pub/*.py`, `kappatest` | `−140` |
+| `script/pub/*.py` | `−129` |
+| `kappatest` | `−140` (legacy; update if re-run) |
 | `LOS/resample_MAS_LOS.py` module constant | `24` (legacy; CLI default `0`) |
 | `build_rays.py` `PHI0_OFFSET` | `90` (only if calling helpers without override) |
 
@@ -144,6 +145,29 @@ Always pass **`--phi0-offset` explicitly** for publication-quality Earth alignme
 ## CLI flags (kappa)
 
 - `--grff-dist-e` / `--grff-kappa` on `synthetic_FF_map_single_thread.py`, `grff_image_from_LOS.py`, `resample_with_ray_tracing.py`.
+
+## Plot-time Gaussian beam (`script/pub/compare_LOS_raytracing*.py`)
+
+Optional beam convolution at **plot time only** (`--plot-consider-beam`, default on; `--no-plot-beam` to disable). Does not affect ray-tracing or LOS synthesis.
+
+| Quantity | Definition |
+|----------|------------|
+| **FWHM** [R☉] | `beam_factor / f[Hz]` |
+| **Gaussian σ** [pixels] | `(FWHM / pix_size_Rsun) / 2.355` |
+| **White circle** | radius `FWHM / 2` (diameter = FWHM) |
+
+**Pub array-size convention** (used for defaults and captions):
+
+```text
+D[km] ≈ 32×10⁶ / beam_factor
+```
+
+| `beam_factor` | Nominal array size | Script default |
+|---------------|-------------------|----------------|
+| `32e6` | ~1 km | high band (`compare_LOS_raytracing_highband.py`) |
+| `16e6` | ~2 km | low band (`compare_LOS_raytracing.py`) |
+
+**Verification:** with `FWHM = beam_factor / f`, the standard small-angle λ/D estimate `θ_FWHM[R☉] ≈ 64.5 / (D[km] · f[MHz])` would require `beam_factor ≈ 6.45×10⁷ / D[km]` (about **2×** the pub values). Pub defaults therefore use a **~½× narrower** FWHM than strict λ/D at the quoted `D`; the `32e6 ↔ 1 km` mapping is the project calibration above, not the full 64.5/(Df) formula unless `beam_factor` is doubled.
 
 ## Quality knobs (limb / resolution)
 

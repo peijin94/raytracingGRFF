@@ -117,7 +117,7 @@ def main():
     parser.add_argument("--n-freq", type=int, default=30, help="Number of log-spaced frequencies")
     parser.add_argument("--start-from-idx", type=int, default=0,
                         help="Start processing from this index (inclusive)")
-    parser.add_argument("--phi0-offset", type=float, default=-140.0, help="Longitude offset (deg)")
+    parser.add_argument("--phi0-offset", type=float, default=-129.0, help="Longitude offset (deg)")
     parser.add_argument("--device", default="cuda", choices=["cpu", "cuda"], help="Sampling device")
     parser.add_argument("--raytrace-device", default="cuda", choices=["cpu", "cuda"], help="Raytrace device")
     parser.add_argument("--workers", type=int, default=1, help="CPU raytrace workers")

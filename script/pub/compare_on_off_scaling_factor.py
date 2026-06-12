@@ -21,6 +21,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter
+import sunpy.visualization.colormaps as cm  # noqa: F401 — registers hinodexrt
+
+xrt_cmap = plt.get_cmap("hinodexrt")
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -103,9 +106,9 @@ def _plot_four_panel(tb_on, tb_off, x_coords_m, y_coords_m, out_png, freq_hz, ba
 
     fig, axes = plt.subplots(1, 4, figsize=(10.5, 3.8), constrained_layout=True)
 
-    im0 = axes[0].imshow(tb_on_conv, origin="lower", extent=extent, aspect="equal", cmap="hot", vmin=0.0, vmax=on_vmax)
+    im0 = axes[0].imshow(tb_on_conv, origin="lower", extent=extent, aspect="equal", cmap=xrt_cmap, vmin=0.0, vmax=on_vmax)
     axes[0].set_title("With magnification factor", pad=48)
-    im1 = axes[1].imshow(tb_off_conv, origin="lower", extent=extent, aspect="equal", cmap="hot", vmin=0.0, vmax=off_vmax)
+    im1 = axes[1].imshow(tb_off_conv, origin="lower", extent=extent, aspect="equal", cmap=xrt_cmap, vmin=0.0, vmax=off_vmax)
     axes[1].set_title("Without magnification factor", pad=48)
     im2 = axes[2].imshow(diff, origin="lower", extent=extent, aspect="equal", cmap="RdBu_r", vmin=-dmax, vmax=dmax)
     axes[2].set_title("Difference ($I_{a} - I_{b}$)", pad=48)
@@ -183,7 +186,7 @@ def main():
     parser.add_argument("--dt", type=float, default=7.75e-3, help="Ray integration dt")
     parser.add_argument("--n-steps", type=int, default=3200, help="Ray integration steps")
     parser.add_argument("--record-stride", type=int, default=6, help="Ray recorder stride")
-    parser.add_argument("--phi0-offset", type=float, default=-140.0, help="Longitude offset (deg)")
+    parser.add_argument("--phi0-offset", type=float, default=-129.0, help="Longitude offset (deg)")
     parser.add_argument("--device", default="cuda", choices=["cpu", "cuda"], help="Sampling device")
     parser.add_argument("--raytrace-device", default="cuda", choices=["cpu", "cuda"], help="Raytrace device")
     parser.add_argument("--workers", type=int, default=1, help="CPU raytrace workers")

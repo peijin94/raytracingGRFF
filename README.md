@@ -174,9 +174,19 @@ t = Time("2025-06-08T20:07:00", scale="utc")
 phi0_offset = -sun.L0(t).to_value("deg")   # L0 ≈ +141° → phi0 ≈ −141°
 ```
 
-Pass to LOS / ray-tracing, e.g. `--phi0-offset -141`. For **`corona2298`** (CR 2298), `script/pub/` and `kappatest` often use **−140°**; fine-tune against a known coronal feature.
+Pass to LOS / ray-tracing, e.g. `--phi0-offset -141`. For **`corona2298`** (CR 2298), `script/pub/` scripts default to **−129°** (feature-aligned); fine-tune against a known coronal feature.
 
 **COROTATING** models (`calculation_frame='COROTATING'` in `omas`) use a grid that co-rotates with the Sun; \(\varphi\) is Carrington longitude. Match the observation epoch to the model Carrington rotation when comparing to data.
+
+### Plot-time beam convolution (pub LOS vs ray figures)
+
+`script/pub/compare_LOS_raytracing.py` and `compare_LOS_raytracing_highband.py` optionally smooth maps at plot time (`--plot-consider-beam`, default on):
+
+- **FWHM** [R☉] = `beam_factor / f[Hz]`
+- Convolution uses Gaussian **σ** = FWHM / 2.355; overlay circle has **radius** FWHM / 2
+- **Array size (pub convention):** `D[km] ≈ 32×10⁶ / beam_factor` → **`32e6` ≈ 1 km** (high band default), **`16e6` ≈ 2 km** (low band default)
+
+Strict λ/D with `θ_FWHM[R☉] ≈ 64.5 / (D[km] · f[MHz])` would need `beam_factor ≈ 6.45×10⁷ / D[km]` (~2× larger). See `mem.md` for details.
 
 ## Validation
 

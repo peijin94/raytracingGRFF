@@ -15,6 +15,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter
+import sunpy.visualization.colormaps as cm  # noqa: F401 — registers hinodexrt
+
+xrt_cmap = plt.get_cmap("hinodexrt")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -25,14 +28,22 @@ from LOS.resample_MAS_LOS import resample_MAS
 import LOS.grff_image_from_LOS as los_grff
 
 R_SUN_M = 6.957e8
+# Plot-time Gaussian beam: FWHM[Rsun] = beam_factor / f[Hz].
+# Pub convention: array size D[km] ≈ 32e6 / beam_factor (32e6 → ~1 km, 16e6 → ~2 km).
+BEAM_FACTOR_DEFAULT = 32e6   # high band: ~1 km
+GAUSSIAN_FWHM_TO_SIGMA = 2.355
+
+
+def beam_fwhm_rsun(freq_hz, beam_factor):
+    """Beam FWHM in R_sun from beam_factor and frequency (Hz)."""
+    return beam_factor / freq_hz
 
 
 def _apply_plot_beam(map_in, freq_hz, beam_factor, x_coords_m, y_coords_m):
+    """Convolve map with circular Gaussian beam (FWHM = beam_factor / f[Hz])."""
     out = np.array(map_in, dtype=float, copy=True)
-    if out.size == 0:
-        return out
-    beam_size_rsun = beam_factor / freq_hz
-    if beam_size_rsun <= 0:
+    fwhm_rsun = beam_fwhm_rsun(freq_hz, beam_factor)
+    if fwhm_rsun <= 0 or out.size == 0:
         return out
     if len(x_coords_m) < 2 or len(y_coords_m) < 2:
         return out
@@ -41,7 +52,7 @@ def _apply_plot_beam(map_in, freq_hz, beam_factor, x_coords_m, y_coords_m):
     pix_rsun = 0.5 * (dx_rsun + dy_rsun)
     if pix_rsun <= 0:
         return out
-    sigma_pix = beam_size_rsun / pix_rsun
+    sigma_pix = (fwhm_rsun / pix_rsun) / GAUSSIAN_FWHM_TO_SIGMA
     if sigma_pix <= 0:
         return out
     return gaussian_filter(out, sigma=sigma_pix)
@@ -56,8 +67,8 @@ def _plot_compare_2x3(
     los_x_coords_list,
     los_y_coords_list,
     out_png,
-    plot_consider_beam=False,
-    beam_factor=5e6,
+    plot_consider_beam=True,
+    beam_factor=BEAM_FACTOR_DEFAULT,
 ):
     fig, axes = plt.subplots(2, 3, figsize=(9.9, 6.6), constrained_layout=True)
     xlim_plot = (-1.4, 1.4)
@@ -69,7 +80,7 @@ def _plot_compare_2x3(
     panel_labels = [["(a1)", "(a2)", "(a3)"], ["(b1)", "(b2)", "(b3)"]]
     for col, freq_hz in enumerate(freqs_hz):
         freq_mhz = freq_hz / 1e6
-        beam_size_rsun = beam_factor / freq_hz
+        beam_fwhm = beam_fwhm_rsun(freq_hz, beam_factor)
 
         ray_map = np.array(ray_maps[col], dtype=float)
         los_map = np.array(los_maps[col], dtype=float)
@@ -101,7 +112,7 @@ def _plot_compare_2x3(
             los_vmax = 1.0
 
         axes[0, col].imshow(
-            ray_map, origin="lower", extent=ray_extent, aspect="equal", cmap="hot",
+            ray_map, origin="lower", extent=ray_extent, aspect="equal", cmap=xrt_cmap,
             vmin=0.0, vmax=ray_vmax, interpolation="bilinear"
         )
         axes[0, col].set_title(f"Ray tracing {freq_mhz:.0f} MHz")
@@ -125,14 +136,14 @@ def _plot_compare_2x3(
         axes[0, col].add_patch(
             plt.Circle((0.0, 0.0), 1.0, edgecolor="white", facecolor="none", linewidth=1.2, linestyle=":")
         )
-        if plot_consider_beam and beam_size_rsun > 0:
+        if plot_consider_beam and beam_fwhm > 0:
             axes[0, col].add_patch(
-                plt.Circle((ray_extent[0] + 0.12 * ray_x_span, ray_extent[2] + 0.12 * ray_y_span), beam_size_rsun,
+                plt.Circle((ray_extent[0] + 0.12 * ray_x_span, ray_extent[2] + 0.12 * ray_y_span), beam_fwhm / 2.0,
                            edgecolor="white", facecolor="none", linewidth=1.8)
             )
 
         axes[1, col].imshow(
-            los_map, origin="lower", extent=los_extent, aspect="equal", cmap="hot",
+            los_map, origin="lower", extent=los_extent, aspect="equal", cmap=xrt_cmap,
             vmin=0.0, vmax=los_vmax, interpolation="bilinear"
         )
         axes[1, col].set_title(f"LOS {freq_mhz:.0f} MHz")
@@ -156,9 +167,9 @@ def _plot_compare_2x3(
         axes[1, col].add_patch(
             plt.Circle((0.0, 0.0), 1.0, edgecolor="white", facecolor="none", linewidth=1.2, linestyle=":")
         )
-        if plot_consider_beam and beam_size_rsun > 0:
+        if plot_consider_beam and beam_fwhm > 0:
             axes[1, col].add_patch(
-                plt.Circle((los_extent[0] + 0.12 * los_x_span, los_extent[2] + 0.12 * los_y_span), beam_size_rsun,
+                plt.Circle((los_extent[0] + 0.12 * los_x_span, los_extent[2] + 0.12 * los_y_span), beam_fwhm / 2.0,
                            edgecolor="white", facecolor="none", linewidth=1.8)
             )
 
@@ -175,7 +186,7 @@ def main():
     parser.add_argument("--freqs-mhz", type=float, nargs="+", default=[280.0, 550.0, 800.0],
                         help="Frequencies in MHz (default: 280 550 800)")
     parser.add_argument("--N-pix", "-n", type=int, default=128, help="Image size")
-    parser.add_argument("--phi0-offset", type=float, default=-140.0, help="Longitude offset (deg)")
+    parser.add_argument("--phi0-offset", type=float, default=-129.0, help="Longitude offset (deg)")
     parser.add_argument("--device", default="cuda", choices=["cpu", "cuda"], help="Sampling device")
     parser.add_argument("--raytrace-device", default="cuda", choices=["cpu", "cuda"], help="Raytrace device")
     parser.add_argument("--workers", type=int, default=1, help="CPU raytrace workers")
@@ -183,10 +194,12 @@ def main():
     parser.add_argument("--grff-lib", default=None, help="Optional path to GRFF_DEM_Transfer.so")
     parser.add_argument("--plot-only", action="store_true",
                         help="Only plot from existing npz maps in --out-dir")
-    parser.add_argument("--plot-consider-beam", action="store_true",
-                        help="Apply frequency-dependent beam only at plotting stage")
-    parser.add_argument("--beam-factor", type=float, default=5e6,
-                        help="Beam factor for plotting: beam_size(R_sun)=beam_factor/freq(Hz)")
+    parser.add_argument("--plot-consider-beam", action="store_true", default=True,
+                        help="Convolve maps with freq-dependent Gaussian beam at plot time (default: on)")
+    parser.add_argument("--no-plot-beam", action="store_false", dest="plot_consider_beam",
+                        help="Disable plot-time beam convolution")
+    parser.add_argument("--beam-factor", type=float, default=BEAM_FACTOR_DEFAULT,
+                        help="Plot beam FWHM scale: FWHM[Rsun]=beam_factor/f[Hz]; D[km]≈32e6/beam_factor")
     parser.add_argument("--quiet", "-q", action="store_true", help="Less logging")
     args = parser.parse_args()
 

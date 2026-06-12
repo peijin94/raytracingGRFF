@@ -29,7 +29,7 @@ except Exception:  # pragma: no cover
 R_MIN = 0.999999
 R_SURFACE = 1.02   # solar radius in R_sun
 DISK_R_MAX = 1.02  # for sqrt(x^2+y^2) <= this, sample on sphere instead of z=z0
-PHI0_OFFSET_DEFAULT = -140 #-318
+PHI0_OFFSET_DEFAULT = -129
 
 
 def cart_to_sph(x, y, z, phi0_offset=0.0):
