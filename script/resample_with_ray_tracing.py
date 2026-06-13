@@ -5,8 +5,10 @@ Resample MAS model along ray-traced paths and compute GRFF emission.
 Similar to resampling_MAS_LOS.py but uses ray tracing (build_rays.ray_trace)
 instead of straight LOS. For a N_pix x N_pix image (default 64x64), each pixel
 has one ray from the observer (large z) backward along -z. At each ray point we
-sample Ne, Te, B from the model and pass segment lengths ds and cross-section
-ratio S to GRFF. Parms external row 14 is set to S times pixel area when enabled.
+sample Ne, Te, and MAS B components (br, bt, bp -> Cartesian Bx, By, Bz), flip
+the voxel list for GRFF radiative transfer (deep-sun -> observer), and pass
+viewing angles theta/phi from the local ray direction and B field. Default
+mechanism is thermal free-free + gyrosynchrotron (``mech_flag=4``).
 GRFF 17-parameter external layout includes ``Dist_E`` (row 15) and ``kappa`` (row 16);
 see ``raytracingGRFF.grff_parms``.
 
@@ -43,7 +45,9 @@ from raytracingGRFF.gpu_raytrace import sample_model_with_rays, trace_ray
 from raytracingGRFF.grff_ctypes import default_grff_lib_path, initGET_MW
 from raytracingGRFF.grff_parms import (
     GRFF_PARMS_EXT_SIZE,
+    MECH_FLAG_FF_GR,
     fill_grff_parms_ext_column,
+    prepare_ray_voxels_for_grff,
     rl_stokes_to_tb_vi,
 )
 from raytracingGRFF.util import (
@@ -422,6 +426,9 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
         ne_xyz=Ne_xyz,
         te_xyz=Te_xyz,
         b_xyz=B_xyz,
+        br_xyz=br_xyz,
+        bt_xyz=bt_xyz,
+        bp_xyz=bp_xyz,
         r_record=r_record,
         s_arr=S_arr,
         ray_start=ray_start,
@@ -432,20 +439,24 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
         fallback_to_cpu=fallback_to_cpu,
         verbose=verbose,
     )
-    ne_all = sampled['ne']
-    te_all = sampled['te']
-    b_all = sampled['b']
-    ds_all = sampled['ds']
-    valid_all = sampled['valid_mask']
-    s_all = sampled['s']
+    if "bx" not in sampled:
+        raise RuntimeError("B-component sampling failed; br/bt/bp cubes are required for GRFF RT.")
+    prepared = prepare_ray_voxels_for_grff(sampled, r_record, R_sun_cm)
+    ne_all = prepared['ne']
+    te_all = prepared['te']
+    b_all = prepared['b']
+    ds_all = prepared['ds']
+    valid_all = prepared['valid_mask']
+    s_all = prepared['s']
+    theta_all = prepared['theta_deg']
+    phi_all = prepared['phi_deg']
 
     if backend == 'fastgrff':
         n_rec = ne_all.shape[0]
         if verbose:
             print(f"Running fastGRFF get_mw_slice for {n_rays} pixels, Nz={n_rec}, Nf={Nf}...")
         Parms_M = np.zeros((15, n_rec, n_rays), dtype=np.float64, order='F')
-        Parms_M[4, :, :] = 90.0
-        Parms_M[6, :, :] = 1 + 4
+        Parms_M[6, :, :] = MECH_FLAG_FF_GR
         Parms_M[7, :, :] = 30
         for p in range(n_rays):
             # Require finite ne/te/b so GRFF and emission stay finite (avoids NaN near disk from R<1 sampling)
@@ -462,6 +473,8 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
             Parms_M[1, :cnt, p] = te_all[:, p][valid]
             Parms_M[2, :cnt, p] = ne_all[:, p][valid]
             Parms_M[3, :cnt, p] = b_all[:, p][valid]
+            Parms_M[4, :cnt, p] = theta_all[:, p][valid]
+            Parms_M[5, :cnt, p] = phi_all[:, p][valid]
             if s_input_on:
                 Parms_M[14, :cnt, p] = s_all[:, p][valid] * pixel_area_cm2
             else:
@@ -524,6 +537,8 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
             te_ray = te_all[:, p][valid]
             b_ray = b_all[:, p][valid]
             ds_ray = ds_all[:, p][valid]
+            theta_ray = theta_all[:, p][valid]
+            phi_ray = phi_all[:, p][valid]
             S_valid = s_all[:, p][valid]
             n_pts = len(ne_ray)
 
@@ -541,6 +556,9 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
                     s_cm2=float(s_row),
                     dist_e=grff_dist_e,
                     kappa=grff_kappa,
+                    theta_deg=float(theta_ray[k]),
+                    phi_deg=float(phi_ray[k]),
+                    mech_flag=MECH_FLAG_FF_GR,
                 )
             Lparms_local = Lparms.copy()
             Lparms_local[0] = N_valid
@@ -624,7 +642,7 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
             plot_beam=plot_beam,
         )
         _save_center_pixel_plots(
-            sampled, N_pix, out_path, verbose,
+            prepared, N_pix, out_path, verbose,
         )
     return result
 

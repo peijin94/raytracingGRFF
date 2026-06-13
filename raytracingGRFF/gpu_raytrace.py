@@ -634,6 +634,7 @@ def _sample_model_with_rays_cpu(
     ne_xyz, te_xyz, b_xyz,
     r_record, s_arr, ray_start, r_sun_cm,
     fill_ne=0.0, fill_te=1e4, fill_b=0.0,
+    br_xyz=None, bt_xyz=None, bp_xyz=None,
 ):
     x0, dx = _check_uniform_grid(np.asarray(x_grid), "x_grid")
     y0, dy = _check_uniform_grid(np.asarray(y_grid), "y_grid")
@@ -648,7 +649,19 @@ def _sample_model_with_rays_cpu(
     te = _trilinear_numpy_uniform(pos, _as_float32_c(te_xyz), x0, y0, z0, inv_dx, inv_dy, inv_dz, float(fill_te))
     b = _trilinear_numpy_uniform(pos, _as_float32_c(b_xyz), x0, y0, z0, inv_dx, inv_dy, inv_dz, float(fill_b))
     ds = _compute_ds_from_valid(pos, valid, _as_float32_c(ray_start), float(r_sun_cm))
-    return {"ne": ne, "te": te, "b": b, "ds": ds, "valid_mask": valid, "s": s}
+    out = {"ne": ne, "te": te, "b": b, "ds": ds, "valid_mask": valid, "s": s}
+    if br_xyz is not None and bt_xyz is not None and bp_xyz is not None:
+        from raytracingGRFF.grff_parms import mas_spherical_b_to_cartesian
+
+        br = _trilinear_numpy_uniform(pos, _as_float32_c(br_xyz), x0, y0, z0, inv_dx, inv_dy, inv_dz, 0.0)
+        bt = _trilinear_numpy_uniform(pos, _as_float32_c(bt_xyz), x0, y0, z0, inv_dx, inv_dy, inv_dz, 0.0)
+        bp = _trilinear_numpy_uniform(pos, _as_float32_c(bp_xyz), x0, y0, z0, inv_dx, inv_dy, inv_dz, 0.0)
+        bx, by, bz = mas_spherical_b_to_cartesian(pos[..., 0], pos[..., 1], pos[..., 2], br, bt, bp)
+        out["bx"] = bx.astype(np.float64)
+        out["by"] = by.astype(np.float64)
+        out["bz"] = bz.astype(np.float64)
+        out["b"] = np.sqrt(out["bx"] ** 2 + out["by"] ** 2 + out["bz"] ** 2).astype(np.float32)
+    return out
 
 
 def _sample_model_with_rays_cuda(
@@ -656,6 +669,7 @@ def _sample_model_with_rays_cuda(
     ne_xyz, te_xyz, b_xyz,
     r_record, s_arr, ray_start, r_sun_cm,
     fill_ne=0.0, fill_te=1e4, fill_b=0.0,
+    br_xyz=None, bt_xyz=None, bp_xyz=None,
 ):
     cp = _get_cupy()
 
@@ -706,7 +720,19 @@ def _sample_model_with_rays_cuda(
     b = cp.asnumpy(b_out).reshape(n_steps, n_rays)
     valid = cp.asnumpy(valid_u8).reshape(n_steps, n_rays).astype(bool)
     ds = _compute_ds_from_valid(pos_np, valid, ray_start_np, float(r_sun_cm))
-    return {"ne": ne, "te": te, "b": b, "ds": ds, "valid_mask": valid, "s": s_np.reshape(n_steps, n_rays)}
+    out = {"ne": ne, "te": te, "b": b, "ds": ds, "valid_mask": valid, "s": s_np.reshape(n_steps, n_rays)}
+    if br_xyz is not None and bt_xyz is not None and bp_xyz is not None:
+        from raytracingGRFF.grff_parms import mas_spherical_b_to_cartesian
+
+        br, _ = _sample(br_xyz, 0.0)
+        bt, _ = _sample(bt_xyz, 0.0)
+        bp, _ = _sample(bp_xyz, 0.0)
+        bx, by, bz = mas_spherical_b_to_cartesian(pos_np[..., 0], pos_np[..., 1], pos_np[..., 2], br, bt, bp)
+        out["bx"] = bx.astype(np.float64)
+        out["by"] = by.astype(np.float64)
+        out["bz"] = bz.astype(np.float64)
+        out["b"] = np.sqrt(out["bx"] ** 2 + out["by"] ** 2 + out["bz"] ** 2).astype(np.float32)
+    return out
 
 
 def sample_model_with_rays(
@@ -726,6 +752,9 @@ def sample_model_with_rays(
     fill_b: float = 0.0,
     fallback_to_cpu: bool = True,
     verbose: bool = True,
+    br_xyz: np.ndarray | None = None,
+    bt_xyz: np.ndarray | None = None,
+    bp_xyz: np.ndarray | None = None,
 ) -> Dict[str, np.ndarray]:
     """Sample model fields along rays on CPU/CUDA."""
     dev = device.lower()
@@ -735,6 +764,7 @@ def sample_model_with_rays(
             ne_xyz, te_xyz, b_xyz,
             r_record, s_arr, ray_start, r_sun_cm,
             fill_ne=fill_ne, fill_te=fill_te, fill_b=fill_b,
+            br_xyz=br_xyz, bt_xyz=bt_xyz, bp_xyz=bp_xyz,
         )
     if dev != "cuda":
         raise ValueError(f"Unsupported device '{device}'. Use 'cpu' or 'cuda'.")
@@ -745,6 +775,7 @@ def sample_model_with_rays(
             ne_xyz, te_xyz, b_xyz,
             r_record, s_arr, ray_start, r_sun_cm,
             fill_ne=fill_ne, fill_te=fill_te, fill_b=fill_b,
+            br_xyz=br_xyz, bt_xyz=bt_xyz, bp_xyz=bp_xyz,
         )
     except Exception as exc:
         if not fallback_to_cpu:
@@ -756,6 +787,7 @@ def sample_model_with_rays(
             ne_xyz, te_xyz, b_xyz,
             r_record, s_arr, ray_start, r_sun_cm,
             fill_ne=fill_ne, fill_te=fill_te, fill_b=fill_b,
+            br_xyz=br_xyz, bt_xyz=bt_xyz, bp_xyz=bp_xyz,
         )
 
 
