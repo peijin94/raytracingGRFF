@@ -18,6 +18,13 @@ def _as_float32_c(a: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(a, dtype=np.float32)
 
 
+def _cupy_as_numpy(arr) -> np.ndarray:
+    """Explicit CuPy→NumPy transfer (CuPy disallows implicit conversion in np.asarray)."""
+    if hasattr(arr, "get"):
+        return arr.get()
+    return np.asarray(arr)
+
+
 def _check_uniform_grid(grid: np.ndarray, name: str) -> tuple[float, float]:
     g = np.asarray(grid, dtype=np.float64)
     if g.ndim != 1 or g.size < 2:
@@ -715,10 +722,10 @@ def _sample_model_with_rays_cuda(
 
     cp.cuda.runtime.deviceSynchronize()
 
-    ne = cp.asnumpy(ne_out).reshape(n_steps, n_rays)
-    te = cp.asnumpy(te_out).reshape(n_steps, n_rays)
-    b = cp.asnumpy(b_out).reshape(n_steps, n_rays)
-    valid = cp.asnumpy(valid_u8).reshape(n_steps, n_rays).astype(bool)
+    ne = _cupy_as_numpy(ne_out).reshape(n_steps, n_rays)
+    te = _cupy_as_numpy(te_out).reshape(n_steps, n_rays)
+    b = _cupy_as_numpy(b_out).reshape(n_steps, n_rays)
+    valid = _cupy_as_numpy(valid_u8).reshape(n_steps, n_rays).astype(bool)
     ds = _compute_ds_from_valid(pos_np, valid, ray_start_np, float(r_sun_cm))
     out = {"ne": ne, "te": te, "b": b, "ds": ds, "valid_mask": valid, "s": s_np.reshape(n_steps, n_rays)}
     if br_xyz is not None and bt_xyz is not None and bp_xyz is not None:
@@ -727,7 +734,12 @@ def _sample_model_with_rays_cuda(
         br, _ = _sample(br_xyz, 0.0)
         bt, _ = _sample(bt_xyz, 0.0)
         bp, _ = _sample(bp_xyz, 0.0)
-        bx, by, bz = mas_spherical_b_to_cartesian(pos_np[..., 0], pos_np[..., 1], pos_np[..., 2], br, bt, bp)
+        br_np = _cupy_as_numpy(br).reshape(n_steps, n_rays)
+        bt_np = _cupy_as_numpy(bt).reshape(n_steps, n_rays)
+        bp_np = _cupy_as_numpy(bp).reshape(n_steps, n_rays)
+        bx, by, bz = mas_spherical_b_to_cartesian(
+            pos_np[..., 0], pos_np[..., 1], pos_np[..., 2], br_np, bt_np, bp_np
+        )
         out["bx"] = bx.astype(np.float64)
         out["by"] = by.astype(np.float64)
         out["bz"] = bz.astype(np.float64)

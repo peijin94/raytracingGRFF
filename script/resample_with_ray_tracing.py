@@ -175,7 +175,9 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
                               plot_vmax=None,
                               plot_beam=True,
                               grff_dist_e=0.0,
-                              grff_kappa=0.0):
+                              grff_kappa=0.0,
+                              prepared_samples_path=None,
+                              mech_flag=MECH_FLAG_FF_GR):
     """
     Run ray tracing for each pixel, sample Ne/Te/B along rays, and compute GRFF emission.
 
@@ -238,6 +240,10 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
         GRFF external Parms row 15: electron distribution (0 Maxwellian, 1 kappa, 2 n).
     grff_kappa : float
         GRFF external Parms row 16: kappa or n index when ``grff_dist_e`` is 1 or 2; ignored for 0.
+    prepared_samples_path : str or None
+        If set, save GRFF-order sampled Ne/Te/B/ds along all rays to this ``.npz`` path.
+    mech_flag : float
+        GRFF mechanism bitmask (Parms row 6). ``5`` = FF only; ``4`` = FF + gyrosynchrotron.
 
     Returns
     -------
@@ -451,12 +457,31 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
     theta_all = prepared['theta_deg']
     phi_all = prepared['phi_deg']
 
+    if prepared_samples_path is not None:
+        np.savez_compressed(
+            prepared_samples_path,
+            ne=ne_all,
+            te=te_all,
+            b=b_all,
+            ds=ds_all,
+            valid_mask=valid_all,
+            theta_deg=theta_all,
+            phi_deg=phi_all,
+            x_flat=x_flat,
+            y_flat=y_flat,
+            N_pix=np.int32(N_pix),
+            X_fov=np.float64(X_fov),
+            freq_hz=np.float64(freq_hz),
+        )
+        if verbose:
+            print(f"Saved prepared ray samples: {prepared_samples_path}")
+
     if backend == 'fastgrff':
         n_rec = ne_all.shape[0]
         if verbose:
             print(f"Running fastGRFF get_mw_slice for {n_rays} pixels, Nz={n_rec}, Nf={Nf}...")
         Parms_M = np.zeros((15, n_rec, n_rays), dtype=np.float64, order='F')
-        Parms_M[6, :, :] = MECH_FLAG_FF_GR
+        Parms_M[6, :, :] = mech_flag
         Parms_M[7, :, :] = 30
         for p in range(n_rays):
             # Require finite ne/te/b so GRFF and emission stay finite (avoids NaN near disk from R<1 sampling)
@@ -558,7 +583,7 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
                     kappa=grff_kappa,
                     theta_deg=float(theta_ray[k]),
                     phi_deg=float(phi_ray[k]),
-                    mech_flag=MECH_FLAG_FF_GR,
+                    mech_flag=mech_flag,
                 )
             Lparms_local = Lparms.copy()
             Lparms_local[0] = N_valid
