@@ -1,6 +1,6 @@
 # GRFFradioSun — project memory
 
-Notes for future sessions (human + agent). Last updated after PSI MAS coordinate documentation.
+Notes for future sessions (human + agent). Last updated after unifying HCC coordinates (`raytracingGRFF.coords`).
 
 ## Purpose
 
@@ -71,53 +71,50 @@ MAS solves MHD on a **staggered spherical grid** \((r, \theta, \varphi)\):
 
 ### GRFFradioSun observer / image frame
 
-Scripts use a **square image** in \(R_\odot\): pixel coords \((x_\mathrm{img}, y_\mathrm{img}, z_\mathrm{img})\).
+Cartesian is **heliocentric (HCC)** everywhere (`raytracingGRFF.coords`):
 
-- \(x_\mathrm{img}, y_\mathrm{img}\): disk plane, FOV \([-X_\mathrm{fov}, X_\mathrm{fov}]\).
-- \(z_\mathrm{img}\): height above disk / along LOS (observer at large \(+z\); rays launched from \(z_\mathrm{start}(x,y)\)).
+- \(+x\): solar west
+- \(+y\): projected solar north
+- \(+z\): toward the observer
 
-**Axis map to PSI Cartesian** (implemented everywhere as `cart_to_sph(x, -z, y, phi0_offset)`):
+\((x, y)\) is helioprojective. Observer at large \(+z\); rays launch toward \(-z\) at each \((x, y)\).
 
-```text
-X_psi = x_img
-Y_psi = y_img
-Z_psi = -z_img        # image −ẑ ≈ solar north
-```
-
-Spherical conversion (`LOS/resample_MAS_LOS.py`, `script/resample_with_ray_tracing.py`):
+**Map to PSI Cartesian** (\(+Z_\mathrm{psi}\) = solar north): \((X, Y, Z)_\mathrm{psi} = (z, x, y)\). Call `cart_to_sph(x, y, z, phi0_offset)` with **no extra permutation**.
 
 ```text
-r     = sqrt(x_img² + y_img² + z_img²)
-colat = arccos(Z_psi / r) = arccos(-z_img / r)
-lon   = arctan2(Y_psi, X_psi) + phi0_offset  [deg → rad]
-lat   = π/2 − colat                          [for psipy]
+r     = sqrt(x² + y² + z²)
+colat = arccos(y / r)
+lon   = arctan2(x, z) + phi0_offset  [deg → rad]
+lat   = π/2 − colat                  [for psipy]
 ```
 
-Sampling: `var.sample_at_coords(lon_deg, lat_deg, r * u.R_sun)` — **longitude and latitude in degrees**, \(r\) in solar radii.
+Sampling: `var.sample_at_coords(lon_deg, lat_deg, r * u.R_sun)`. Helper: `cart_to_mas_lonlat`.
 
-**Do not** call `cart_to_sph(x, y, z)` without the `(x, -z, y)` permutation; that breaks alignment with PSI north and Carrington φ.
+**Do not** permute arguments (`(x, -z, y)` etc.). That was the old convention and disagrees with HCC.
 
 ### `phi0_offset` vs Carrington / Earth view
 
-`phi0_offset` (degrees) is an **extra longitude rotation** applied when mapping the image frame onto the MAS \(\varphi\) grid. It is **not** auto-derived from UTC in any script.
+`phi0_offset` (degrees) is added to geometric longitude so **disk center** is sampled at Carrington longitude `phi0_offset`. It is **not** auto-derived from UTC in any script.
 
 | Setting | Meaning |
 |---------|---------|
-| **`phi0_offset = 0`** | Image \(+x\) axis → MAS \(\varphi = 0°\). Fixed lab frame; **not** Earth central meridian on a given date. |
-| **`phi0_offset ≈ −L0`** | Earth-aligned map: disk center Carrington longitude matches observation. **L0** = apparent Carrington longitude of disk center (SunPy `sunpy.coordinates.sun.L0`). |
+| **`phi0_offset = 0`** | Disk center → MAS \(\varphi = 0°\). Fixed lab frame; **not** Earth central meridian on a given date. |
+| **`phi0_offset ≈ L0`** | Earth-aligned map: disk center Carrington longitude matches observation. **L0** = apparent Carrington longitude of disk center (SunPy `sunpy.coordinates.sun.L0`). |
 
 Carrington/Stonyhurst relation at disk center: \(\Phi_C \approx \Phi_S + L_0\) (see [SunPy coordinates](https://docs.sunpy.org/en/stable/reference/coordinates/index.html)).
 
 **`corona2298` example** (CR 2298, `phishift=0`, run 2025‑06‑26):
 
-- Observation **2025‑06‑08 20:07 UTC** → L0 ≈ **+141.3°** → **`--phi0-offset -141`** (pub scripts use **−129°** after feature alignment; tune on a known feature).
+- Observation **2025‑06‑08 20:07 UTC** → L0 ≈ **+141.3°** → **`--phi0-offset 141`** (`PHI0_EARTH_CORONA2298`).
+
+The previous pub default **−129°** with `cart_to_sph(x, -z, y)` placed disk center at \(\varphi = -90° - 129° \equiv 141°\). Same Earth view; do not keep −129 with the new conversion.
 
 ```python
 from astropy.time import Time
 from sunpy.coordinates import sun
 
 t = Time("2025-06-08T20:07:00", scale="utc")
-phi0_offset = -sun.L0(t).to_value("deg")
+phi0_offset = sun.L0(t).to_value("deg")
 ```
 
 ### Repo defaults (easy to confuse)
@@ -125,10 +122,10 @@ phi0_offset = -sun.L0(t).to_value("deg")
 | Script / area | Default `phi0_offset` |
 |---------------|----------------------|
 | `resample_with_ray_tracing.py` CLI | `0` |
-| `script/pub/*.py` | `−129` |
-| `kappatest` | `−140` (legacy; update if re-run) |
-| `LOS/resample_MAS_LOS.py` module constant | `24` (legacy; CLI default `0`) |
-| `build_rays.py` `PHI0_OFFSET` | `90` (only if calling helpers without override) |
+| `script/pub/*.py` | `141` (`PHI0_EARTH_CORONA2298`) |
+| `kappatest` | `130` (was −140 under the old axis permutation) |
+| `LOS/resample_MAS_LOS.py` | CLI does not pass it; function default `0` |
+| `build_rays.py` `PHI0_OFFSET` | `0` |
 
 Always pass **`--phi0-offset` explicitly** for publication-quality Earth alignment.
 

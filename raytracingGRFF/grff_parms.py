@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from .coords import cart_to_sph
+
 GRFF_PARMS_EXT_SIZE = 17
 # mech_flag bitmask (GRFF MWtransfer.cpp): bit0=GR off, bit1=FF off, bit2=HHe off, bit3=force isothermal
 MECH_FLAG_FF_ONLY = 5.0   # FF on, GR off (legacy LOS default)
@@ -36,9 +38,11 @@ MECH_FLAG_FF_GR = 4.0     # FF + gyrosynchrotron on, HHe off
 
 def mas_spherical_b_to_cartesian(x, y, z, br, bt, bp):
     """
-    Convert MAS (br, bt, bp) at image-frame position (x, y, z) [R_sun] to Cartesian B.
+    Convert MAS (br, bt, bp) at HCC position (x, y, z) to HCC Cartesian B.
 
-    Uses the same (x, -z, y) spherical convention as ``cart_to_sph`` in resampling scripts.
+    HCC: +x west, +y north, +z toward the observer. Vector basis uses geometric
+    angles from ``cart_to_sph`` (``phi0_offset=0``); Carrington rotation is
+    applied only when sampling the model, not when projecting components.
     """
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
@@ -47,27 +51,26 @@ def mas_spherical_b_to_cartesian(x, y, z, br, bt, bp):
     bt = np.asarray(bt, dtype=np.float64)
     bp = np.asarray(bp, dtype=np.float64)
 
-    r = np.sqrt(x * x + y * y + z * z)
-    colat = np.arccos(np.clip(-z / np.maximum(r, 1e-30), -1.0, 1.0))
-    lon = np.arctan2(y, x)
+    _, colat, lon = cart_to_sph(x, y, z, phi0_offset=0.0)
     sin_c = np.sin(colat)
     cos_c = np.cos(colat)
     sin_l = np.sin(lon)
     cos_l = np.cos(lon)
 
-    er_x = sin_c * cos_l
-    er_y = sin_c * sin_l
-    er_z = -cos_c
-    ec_x = cos_c * cos_l
-    ec_y = cos_c * sin_l
-    ec_z = sin_c
-    el_x = -sin_l
-    el_y = cos_l
-    el_z = 0.0
+    # ê_r, ê_θ, ê_φ in HCC
+    er_x = sin_c * sin_l
+    er_y = cos_c
+    er_z = sin_c * cos_l
+    et_x = cos_c * sin_l
+    et_y = -sin_c
+    et_z = cos_c * cos_l
+    ep_x = cos_l
+    ep_y = 0.0
+    ep_z = -sin_l
 
-    bx = br * er_x + bt * ec_x + bp * el_x
-    by = br * er_y + bt * ec_y + bp * el_y
-    bz = br * er_z + bt * ec_z + bp * el_z
+    bx = br * er_x + bt * et_x + bp * ep_x
+    by = br * er_y + bt * et_y + bp * ep_y
+    bz = br * er_z + bt * et_z + bp * ep_z
     return bx, by, bz
 
 

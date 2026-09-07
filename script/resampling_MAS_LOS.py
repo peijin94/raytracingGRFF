@@ -2,13 +2,13 @@
 """
 Resample MAS model along line-of-sight (LOS) for emission calculation.
 
+HCC frame: +x solar west, +y projected solar north, +z toward the observer.
 For a N_pix x N_pix image covering [-X-FOV, X-FOV] in x and y (R_sun),
-each LOS (x,y coordinates) samples points along z.
-For each point (x, y, z), convert to MAS spherical coordinates
-and interpolate physics parameters: T_e (K), N_e (cm^-3), and B along LOS.
+each LOS at (x, y) samples along +z. See ``raytracingGRFF.coords``.
 """
 
 import argparse
+import sys
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -23,6 +23,11 @@ from psipy.io.mas import _read_mas
 import xarray as xr
 from psipy.model.variable import Variable
 
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+from raytracingGRFF.coords import cart_to_mas_lonlat
+
 # Suppress warnings
 warnings.filterwarnings('ignore')
 
@@ -34,47 +39,12 @@ R_sun_cm = 6.957e10  # cm
 R_sun_m = 6.957e8    # meters
 r_min = 0.9999999    # Minimum r in R_sun for valid interpolation
 
-phi0_offset = 24
-
+phi0_offset = 0.0
 
 
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
-
-def cart_to_sph(x, y, z, phi0_offset=0.0): # degrees
-    """
-    Convert Cartesian coordinates to spherical coordinates.
-
-    Parameters
-    ----------
-    x, y, z : float or array
-        Cartesian coordinates (meters)
-
-    Returns
-    -------
-    r : float or array
-        Radial distance (meters)
-    colat : float or array
-        Colatitude in radians (0 at north pole, π at south pole)
-    lon : float or array
-        Longitude in radians (0 to 2π)
-    """
-    r = np.sqrt(x**2 + y**2 + z**2)
-    colat = np.arccos(np.clip(z / r, -1.0, 1.0))  # Colatitude [0, π]
-    lon = np.arctan2(y, x)  # Longitude [-π, π]
-    lon = lon + phi0_offset * np.pi / 180.0
-    lon = np.where(lon < 0, lon + 2*np.pi, lon)
-    return r, colat, lon
-
-def sph_to_cart(r, colat, lon):
-    """
-    Convert spherical coordinates to Cartesian coordinates.
-    """
-    x = r * np.sin(colat) * np.cos(lon)
-    y = r * np.sin(colat) * np.sin(lon)
-    z = r * np.cos(colat)
-    return x, y, z
 
 def load_mas_var_filtered(model, var_name):
     """Load MAS variable, filtering out files that don't match {var}{3digits}.hdf pattern"""
@@ -230,7 +200,9 @@ def resample_MAS(model_path, N_pix, X_range, Y_range, N_z, dz0, variable_spacing
             y_arr = np.full(N_z, y)
             z_arr = z_start + z_coords
 
-            r_m_arr, colat_rad_arr, lon_rad_arr = cart_to_sph(x_arr, -z_arr, y_arr, phi0_offset)  #cart_to_sph(x_arr, y_arr, z_arr)
+            lon_deg_arr, lat_deg_arr, r_m_arr = cart_to_mas_lonlat(
+                x_arr, y_arr, z_arr, phi0_offset=phi0_offset
+            )
             r_Rsun_arr = r_m_arr / R_sun_m
             valid_mask = r_Rsun_arr >= r_min
 
@@ -240,11 +212,6 @@ def resample_MAS(model_path, N_pix, X_range, Y_range, N_z, dz0, variable_spacing
 
             if not np.any(valid_mask):
                 continue
-
-            lat_rad_arr = np.pi/2 - colat_rad_arr
-            lat_deg_arr = np.rad2deg(lat_rad_arr)
-            lon_deg_arr = np.rad2deg(lon_rad_arr)
-            lon_deg_arr = np.where(lon_deg_arr < 0, lon_deg_arr + 360.0, lon_deg_arr)
 
             r_arr = r_Rsun_arr * u.R_sun
             lat_arr = lat_deg_arr * u.deg

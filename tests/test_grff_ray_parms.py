@@ -51,7 +51,7 @@ def test_prepare_ray_voxels_flips_observer_to_sun_order():
 
 
 def test_mas_spherical_b_radial_on_x_axis():
-    # point on +x axis, colat=pi/2, lon=0 => br along +x
+    # west limb (+x): colat=pi/2, lon=pi/2 => br along +x
     bx, by, bz = mas_spherical_b_to_cartesian(1.0, 0.0, 0.0, 2.0, 0.0, 0.0)
     assert abs(bx - 2.0) < 1e-9
     assert abs(by) < 1e-9

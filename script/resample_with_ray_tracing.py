@@ -3,8 +3,10 @@
 Resample MAS model along ray-traced paths and compute GRFF emission.
 
 Similar to resampling_MAS_LOS.py but uses ray tracing (build_rays.ray_trace)
-instead of straight LOS. For a N_pix x N_pix image (default 64x64), each pixel
-has one ray from the observer (large z) backward along -z. At each ray point we
+instead of straight LOS. Cartesian frame is heliocentric: +x solar west,
++y projected solar north, +z toward the observer, so (x, y) is helioprojective.
+For a N_pix x N_pix image (default 64x64), each pixel has one ray from the
+observer (large +z) toward -z. At each ray point we
 sample Ne, Te, and MAS B components (br, bt, bp -> Cartesian Bx, By, Bz), flip
 the voxel list for GRFF radiative transfer (deep-sun -> observer), and pass
 viewing angles theta/phi from the local ray direction and B field. Default
@@ -41,6 +43,7 @@ from psipy.model.variable import Variable
 
 import sys
 from raytracingGRFF.build_rays import ray_trace, resample_to_xyz_cube, load_mas_var_filtered
+from raytracingGRFF.coords import cart_to_mas_lonlat
 from raytracingGRFF.gpu_raytrace import sample_model_with_rays, trace_ray
 from raytracingGRFF.grff_ctypes import default_grff_lib_path, initGET_MW
 from raytracingGRFF.grff_parms import (
@@ -88,7 +91,6 @@ def _ray_trace_chunk(args):
 
 R_sun_cm = 6.957e10   # cm
 R_sun_m = 6.957e8     # meters
-PHI0_OFFSET = 90     # default; override with --phi0-offset
 R_MIN = 0.999999
 
 GRFF_LIB = str(default_grff_lib_path())
@@ -102,19 +104,9 @@ AU_cm = 1.49599e13
 # subtends Omega = pixel_area_cm2/AU_cm^2, so I = F/Omega => T_b = F_cgs * (AU_cm^2/pixel_area_cm2) * c^2/(2*k_B*nu^2).
 
 
-def cart_to_sph(x, y, z, phi0_offset=0.0):
-    """Convert Cartesian to spherical (r, colat, lon). Same convention as build_rays / resampling_MAS_LOS."""
-    r = np.sqrt(x**2 + y**2 + z**2)
-    colat = np.arccos(np.clip(z / r, -1.0, 1.0))
-    lon = np.arctan2(y, x)
-    lon = lon + phi0_offset * np.pi / 180.0
-    lon = np.where(lon < 0, lon + 2 * np.pi, lon)
-    return r, colat, lon
-
-
 def resample_var_to_cube(model, var_name, x_grid, y_grid, z_grid, target_unit=None,
                          phi0_offset=0.0, fill_nan=0.0, verbose=True):
-    """Resample a MAS variable onto xyz cube. target_unit: e.g. u.cm**-3, u.K, u.G."""
+    """Resample a MAS variable onto an HCC xyz cube. target_unit: e.g. u.cm**-3, u.K, u.G."""
 
     var = load_mas_var_filtered(model, var_name)
     ny, nz = len(y_grid), len(z_grid)
@@ -124,14 +116,12 @@ def resample_var_to_cube(model, var_name, x_grid, y_grid, z_grid, target_unit=No
     x_iter = tqdm(list(enumerate(x_grid)), desc=f"Resample {var_name}", disable=not verbose, unit="slice")
     for ix, x_val in x_iter:
         x_mesh = np.full_like(y_mesh, x_val)
-        r, colat, lon = cart_to_sph(x_mesh, -z_mesh, y_mesh, phi0_offset=phi0_offset)
-        lat = np.pi / 2 - colat
+        lon_deg, lat_deg, r = cart_to_mas_lonlat(
+            x_mesh, y_mesh, z_mesh, phi0_offset=phi0_offset
+        )
         r_mask = np.isfinite(r) & (r >= R_MIN)
         if not np.any(r_mask):
             continue
-        lat_deg = np.rad2deg(lat)
-        lon_deg = np.rad2deg(lon)
-        lon_deg = np.where(lon_deg < 0, lon_deg + 360.0, lon_deg)
         vals = np.full_like(r, np.nan, dtype=float)
         r_arr = r[r_mask] * u.R_sun
         lat_arr = lat_deg[r_mask] * u.deg
@@ -229,7 +219,7 @@ def run_ray_tracing_emission(model_path, N_pix=64, X_fov=1.44, freq_hz=75e6,
     beam_fwhm_factor : float
         Multiplier in θ = factor * λ/D (default 1.22 HPBW; use 1.0 for Gaussian λ/D).
     phi0_offset : float
-        Longitude offset in degrees for MAS spherical coords (default 0).
+        Longitude offset in degrees added to MAS φ; disk center is Carrington phi0 (default 0).
     plot_log_norm : bool
         If True, emission map PNG uses matplotlib LogNorm (needs plot_vmin > 0).
     plot_vmin, plot_vmax : float or None
@@ -873,7 +863,7 @@ def main():
     parser.add_argument('--beam-fwhm-factor', type=float, default=1.22,
                         help='θ = factor*λ/D (default 1.22 HPBW; 1.0 for Gaussian λ/D)')
     parser.add_argument('--phi0-offset', type=float, default=0,
-                        help='Longitude offset in degrees for MAS spherical coords (default: 0)')
+                        help='Longitude offset in degrees added to MAS φ; disk center is Carrington phi0 (default: 0)')
     parser.add_argument(
         '--grff-dist-e',
         type=float,

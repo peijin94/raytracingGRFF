@@ -1,12 +1,13 @@
 #!/usr/bin/env python
 """
-Resample MAS model onto a regular xyz cube, run ray tracing, and plot rays.
+Resample MAS model onto a regular HCC xyz cube, run ray tracing, and plot rays.
 
-Based on ray_tracing_demo.ipynb, with resampling orientation and phi0
-matching resampling_MAS_LOS.py.
+Cartesian frame: +x solar west, +y solar north, +z toward the observer.
+Rays launch toward -z. See ``raytracingGRFF.coords``.
 """
 
 import argparse
+import sys
 import warnings
 import re
 from pathlib import Path
@@ -20,29 +21,21 @@ from scipy.interpolate import RegularGridInterpolator
 from numpy.linalg import norm
 from numpy import cross
 
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+from raytracingGRFF.coords import cart_to_mas_lonlat
+
 warnings.filterwarnings('ignore')
 
 R_SUN_M = 6.957e8
 R_MIN = 0.9999999
-PHI0_OFFSET = 24.0
+PHI0_OFFSET = 0.0
 
 CONST_C = 2.998e10
 R_S = 6.96e10
 C = 2.998e10
 C_R = C / R_S
-
-
-def cart_to_sph(x, y, z, phi0_offset=0.0):
-    """Convert Cartesian coords to spherical (r, colat, lon).
-
-    Inputs/outputs are unitless; apply units outside as needed.
-    """
-    r = np.sqrt(x**2 + y**2 + z**2)
-    colat = np.arccos(np.clip(z / r, -1.0, 1.0))
-    lon = np.arctan2(y, x)
-    lon = lon + phi0_offset * np.pi / 180.0
-    lon = np.where(lon < 0, lon + 2 * np.pi, lon)
-    return r, colat, lon
 
 
 def load_mas_var_filtered(model, var_name):
@@ -86,10 +79,9 @@ def load_mas_var_filtered(model, var_name):
 
 def resample_to_xyz_cube(model, var_name, x_grid, y_grid, z_grid, phi0_offset=0.0,
                          fill_nan=0.0, verbose=True):
-    """Resample MAS variable onto a regular xyz grid.
+    """Resample MAS variable onto a regular HCC xyz grid.
 
-    Orientation and phi0 follow resampling_MAS_LOS.py:
-    cart_to_sph(x, -z, y, phi0_offset)
+    +x west, +y north, +z toward observer. See ``raytracingGRFF.coords``.
     """
     import astropy.units as u
 
@@ -107,17 +99,13 @@ def resample_to_xyz_cube(model, var_name, x_grid, y_grid, z_grid, phi0_offset=0.
 
         x_mesh = np.full_like(y_mesh, x_val)
 
-        # Match resampling_MAS_LOS orientation and phi0
-        r, colat, lon = cart_to_sph(x_mesh, -z_mesh, y_mesh, phi0_offset=phi0_offset)
-        lat = np.pi / 2 - colat
+        lon_deg, lat_deg, r = cart_to_mas_lonlat(
+            x_mesh, y_mesh, z_mesh, phi0_offset=phi0_offset
+        )
 
         r_mask = np.isfinite(r) & (r >= R_MIN)
         if not np.any(r_mask):
             continue
-
-        lat_deg = np.rad2deg(lat)
-        lon_deg = np.rad2deg(lon)
-        lon_deg = np.where(lon_deg < 0, lon_deg + 360.0, lon_deg)
 
         vals = np.full_like(r, np.nan, dtype=float)
         r_arr = (r[r_mask] * u.R_sun)
@@ -314,14 +302,14 @@ def main():
                         help='Number of grid points per axis (default: 300)')
     parser.add_argument('--freq-mhz', type=float, default=75.0,
                         help='Ray frequency in MHz (default: 40)')
-    parser.add_argument('--start-x', type=float, default=3.999,
-                        help='Starting x in R_sun (default: 4.5)')
-    parser.add_argument('--start-y', type=float, default=0.0,
-                        help='Starting y in R_sun (default: 0.0)')
-    parser.add_argument('--z-start-min', type=float, default=-1.5,
-                        help='Ray start z min in R_sun (default: -1.5)')
-    parser.add_argument('--z-start-max', type=float, default=1.5,
-                        help='Ray start z max in R_sun (default: 1.5)')
+    parser.add_argument('--z-observer', type=float, default=3.999,
+                        help='Observer z in R_sun; rays launch toward -z (default: 3.999)')
+    parser.add_argument('--y-start', type=float, default=0.0,
+                        help='Ray start y in R_sun, solar north (default: 0.0)')
+    parser.add_argument('--x-start-min', type=float, default=-1.5,
+                        help='Ray start x min in R_sun, solar west (default: -1.5)')
+    parser.add_argument('--x-start-max', type=float, default=1.5,
+                        help='Ray start x max in R_sun, solar west (default: 1.5)')
     parser.add_argument('--n-rays', type=int, default=18,
                         help='Number of rays (default: 18)')
     parser.add_argument('--dt', type=float, default=10e-3,
@@ -374,10 +362,10 @@ def main():
         print("Computing plasma frequency and tracing rays...")
     omega_pe_3d = 8.93e3 * np.sqrt(rhoxyz) * 2 * np.pi
 
-    z_start = np.linspace(args.z_start_min, args.z_start_max, args.n_rays)
-    x_start = np.zeros_like(z_start) + args.start_x
-    y_start = np.zeros_like(z_start) + args.start_y
-    kvec_in_norm = np.tile(np.array([[-1, 0, 0]]), (len(z_start), 1))
+    x_start = np.linspace(args.x_start_min, args.x_start_max, args.n_rays)
+    y_start = np.zeros_like(x_start) + args.y_start
+    z_start = np.zeros_like(x_start) + args.z_observer
+    kvec_in_norm = np.tile(np.array([[0.0, 0.0, -1.0]]), (len(x_start), 1))
 
     r_record, _ = ray_trace(
         omega_pe_3d=omega_pe_3d,

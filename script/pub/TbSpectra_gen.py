@@ -19,6 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from raytracingGRFF.coords import PHI0_EARTH_CORONA2298
 from script.resample_with_ray_tracing import run_ray_tracing_emission
 
 R_SUN_M = 6.957e8
@@ -117,7 +118,7 @@ def main():
     parser.add_argument("--n-freq", type=int, default=30, help="Number of log-spaced frequencies")
     parser.add_argument("--start-from-idx", type=int, default=0,
                         help="Start processing from this index (inclusive)")
-    parser.add_argument("--phi0-offset", type=float, default=-129.0, help="Longitude offset (deg)")
+    parser.add_argument("--phi0-offset", type=float, default=PHI0_EARTH_CORONA2298, help="Carrington longitude at disk center (deg)")
     parser.add_argument("--device", default="cuda", choices=["cpu", "cuda"], help="Sampling device")
     parser.add_argument("--raytrace-device", default="cuda", choices=["cpu", "cuda"], help="Raytrace device")
     parser.add_argument("--workers", type=int, default=1, help="CPU raytrace workers")

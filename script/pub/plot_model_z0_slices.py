@@ -10,6 +10,7 @@ then writes a 3-panel figure similar to LOS_2D_slices.png:
 
 import argparse
 import re
+import sys
 from pathlib import Path
 
 import astropy.units as u
@@ -26,20 +27,15 @@ try:
 except Exception:  # pragma: no cover
     xr = None
 
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+from raytracingGRFF.coords import PHI0_EARTH_CORONA2298, cart_to_mas_lonlat
+
 R_MIN = 0.999999
 R_SURFACE = 1.02   # solar radius in R_sun
 DISK_R_MAX = 1.02  # for sqrt(x^2+y^2) <= this, sample on sphere instead of z=z0
-PHI0_OFFSET_DEFAULT = -129
-
-
-def cart_to_sph(x, y, z, phi0_offset=0.0):
-    """Convert Cartesian coords to spherical (r, colat, lon)."""
-    r = np.sqrt(x**2 + y**2 + z**2)
-    colat = np.arccos(np.clip(z / r, -1.0, 1.0))
-    lon = np.arctan2(y, x)
-    lon = lon + phi0_offset * np.pi / 180.0
-    lon = np.where(lon < 0, lon + 2 * np.pi, lon)
-    return r, colat, lon
+PHI0_OFFSET_DEFAULT = PHI0_EARTH_CORONA2298
 
 
 def load_mas_var_filtered(model, var_name):
@@ -86,14 +82,8 @@ def sample_plane(model, n_pix=256, extent=1.44, z0=0.0, phi0_offset=PHI0_OFFSET_
     z_surf = np.sqrt(np.maximum(R_SURFACE**2 - xx**2 - yy**2, 0.0))
     zz[on_disk] = z_surf[on_disk]
 
-    # Match project orientation used in LOS/ray-trace workflows.
-    r, colat, lon = cart_to_sph(xx, -zz, yy, phi0_offset=phi0_offset)
+    lon_deg, lat_deg, r = cart_to_mas_lonlat(xx, yy, zz, phi0_offset=phi0_offset)
     valid = np.isfinite(r) & (r >= R_MIN)
-
-    lat = np.pi / 2.0 - colat
-    lon_deg = np.rad2deg(lon)
-    lon_deg = np.where(lon_deg < 0.0, lon_deg + 360.0, lon_deg)
-    lat_deg = np.rad2deg(lat)
 
     r_arr = (r[valid] * u.R_sun)
     lon_arr = (lon_deg[valid] * u.deg)
@@ -178,7 +168,7 @@ def main():
                         help="Half-width in R_sun for x,y in [-extent, extent]")
     parser.add_argument("--z", type=float, default=0.0, help="Slice z location in R_sun")
     parser.add_argument("--phi0-offset", type=float, default=PHI0_OFFSET_DEFAULT,
-                        help="phi0 offset in degrees (default: 24)")
+                        help=f"Carrington longitude at disk center (deg, default: {PHI0_OFFSET_DEFAULT})")
     parser.add_argument("-o", "--out", default="LOS_2D_slices_z0.pdf", help="Output figure path")
     args = parser.parse_args()
 
