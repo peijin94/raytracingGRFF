@@ -1,0 +1,22 @@
+{
+  "widescan_model_vs_daily": {
+    "r": 0.20239413125608474,
+    "dlon": -4.0,
+    "dlat": 4.0
+  },
+  "finescan_model_vs_daily": {
+    "r": 0.2027242090994874,
+    "dlon": -3.400000000000002,
+    "dlat": 4.0
+  },
+  "widescan_synoptic_vs_daily": {
+    "r": 0.21354959848906024,
+    "dlon": 0.0,
+    "dlat": 0.0
+  },
+  "finescan_synoptic_vs_daily": {
+    "r": 0.21354959848906024,
+    "dlon": 4.440892098500626e-16,
+    "dlat": 4.440892098500626e-16
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "model_as_is": 0.11022260355290024,
+  "model_as_is_signflip": -0.11022260355290024,
+  "model_lon_mirror": 0.025318441413085226,
+  "model_lon_mirror_signflip": -0.025318441413085226,
+  "model_lat_mirror": 0.0017478051631733974,
+  "model_lat_mirror_signflip": -0.0017478051631733974,
+  "model_both_mirror": 0.029517240633719227,
+  "model_both_mirror_signflip": -0.029517240633719227,
+  "synoptic_as_is": -0.010350549379967301,
+  "synoptic_as_is_signflip": 0.010350549379967301,
+  "synoptic_lon_mirror": 0.18709805875776023,
+  "synoptic_lon_mirror_signflip": -0.18709805875776023,
+  "synoptic_lat_mirror": 0.013785100806943283,
+  "synoptic_lat_mirror_signflip": -0.013785100806943283,
+  "synoptic_both_mirror": 0.08226560557429122,
+  "synoptic_both_mirror_signflip": -0.08226560557429122,
+  "model_as_is_best_shift": {
+    "r": 0.16612712804485763,
+    "dlon": 2.5,
+    "dlat": -5.0
+  },
+  "synoptic_as_is_best_shift": {
+    "r": 0.119148220096466,
+    "dlon": 4.75,
+    "dlat": 0.25
+  },
+  "T2": {
+    "rms_as_is": 71.80703812567418,
+    "dTy_center": 120.74622454761096,
+    "B0": 7.247969172088899
+  }
+}
